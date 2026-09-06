@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Workflow {id, name, description, steps[]}
+model Workflow {
+  id          String    @id @default(cuid())
+  name        String
+  description String    @default("")
+  installed   Boolean   @default(false)
+  lastRunAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  steps       Step[]
+}
+
+// Step {kind: message|snapshot, payload, ts}
+model Step {
+  id         String   @id @default(cuid())
+  workflowId String
+  kind       String // "message" | "snapshot"
+  payload    String // JSON string: { text?, image?, note? }
+  ts         DateTime
+  order      Int
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId, order])
+}
+
+// LLM provider settings — API key stored server-side only
+model Settings {
+  id        String   @id @default("singleton")
+  endpoint  String   @default("")
+  apiKey    String   @default("")
+  model     String   @default("")
+  updatedAt DateTime @updatedAt
+}
