@@ -56,6 +56,18 @@ export interface ChatMessage {
   ts: number;
   streaming?: boolean;
   error?: boolean;
+  /** Agent tool activity performed by the assistant while producing this message. */
+  toolCalls?: ToolEvent[];
+}
+
+/** A real agent tool execution (file read/write, shell, browser control, code run). */
+export interface ToolEvent {
+  id: string;
+  name: string;
+  args?: Record<string, unknown>;
+  ok?: boolean;
+  output?: string;
+  status: "running" | "done";
 }
 
 export interface SettingsDTO {

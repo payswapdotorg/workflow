@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bot, Camera, Eraser, Loader2, SendHorizontal, Workflow } from "lucide-react";
+import { Bot, Camera, Eraser, Loader2, SendHorizontal, TerminalSquare, Workflow } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,11 +17,12 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useAppStore } from "@/lib/store";
-import { captureFrame, imagePart, streamChat, textPart } from "@/lib/screen";
+import { captureFrame, createToolCollector, imagePart, streamChat, textPart } from "@/lib/screen";
 import { captureSnapshotStep } from "@/lib/session-actions";
-import { TEACH_SYSTEM } from "@/lib/prompts";
+import { TEACH_SYSTEM_WITH_TOOLS } from "@/lib/prompts";
 import { uid, type LLMMessage } from "@/lib/types";
 import { SaveWorkflowDialog } from "./save-workflow-dialog";
+import { ToolActivity } from "./tool-activity";
 import { toast } from "sonner";
 
 export function TeachingChat() {
@@ -68,9 +69,13 @@ export function TeachingChat() {
         content: frame ? [textPart(text), imagePart(frame)] : text,
       });
       await streamChat({
-        system: TEACH_SYSTEM,
+        system: TEACH_SYSTEM_WITH_TOOLS,
         messages: history,
+        enableTools: true,
         onDelta: (d) => useAppStore.getState().patchSessionMessage(asstId, (m) => ({ text: m.text + d })),
+        onTool: createToolCollector((toolCalls) =>
+          useAppStore.getState().patchSessionMessage(asstId, { toolCalls })
+        ),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LLM call failed";
@@ -92,6 +97,14 @@ export function TeachingChat() {
       <div className="flex items-center gap-2 border-b border-zinc-800/80 px-4 py-2.5">
         <Bot className="h-4 w-4 text-amber-400" />
         <span className="text-sm font-semibold text-zinc-100">Teaching chat</span>
+        <Badge
+          variant="outline"
+          className="hidden h-5 gap-1 border-zinc-700 px-1.5 text-[10px] text-zinc-400 sm:inline-flex"
+          title="The LLM can act on the computer: read/write files, run shell commands and code, control a browser"
+        >
+          <TerminalSquare className="h-2.5 w-2.5" />
+          Agent tools on
+        </Badge>
         <Badge variant="secondary" className="ml-auto h-5 border-zinc-700 bg-zinc-800/70 text-[11px] font-medium text-zinc-300">
           {steps.length} event{steps.length === 1 ? "" : "s"} recorded
         </Badge>
@@ -175,10 +188,11 @@ export function TeachingChat() {
           ) : (
             <div key={m.id} className="flex justify-start">
               <div
-                className={`max-w-[85%] rounded-2xl rounded-bl-md border px-3.5 py-2.5 ${
+                className={`max-w-[92%] rounded-2xl rounded-bl-md border px-3.5 py-2.5 ${
                   m.error ? "border-red-500/30 bg-red-500/10" : "border-zinc-800 bg-zinc-900"
                 }`}
               >
+                <ToolActivity calls={m.toolCalls ?? []} />
                 {m.text ? (
                   <p className={`whitespace-pre-wrap text-sm leading-relaxed ${m.error ? "text-red-200" : "text-zinc-200"}`}>
                     {m.text}

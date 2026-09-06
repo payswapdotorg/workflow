@@ -12,6 +12,7 @@ import {
   Play,
   SendHorizontal,
   Square,
+  TerminalSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAppStore } from "@/lib/store";
 import { replayEngine } from "@/lib/replay-engine";
 import { stepInstruction } from "@/lib/types";
+import { ToolActivity } from "./tool-activity";
 import { toast } from "sonner";
 
 export function ReplayPanel() {
@@ -80,6 +82,14 @@ export function ReplayPanel() {
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100" title={workflow.name}>
             {workflow.name}
           </h2>
+          <Badge
+            variant="outline"
+            className="hidden h-5 shrink-0 gap-1 border-zinc-700 px-1.5 text-[10px] text-zinc-400 sm:inline-flex"
+            title="The LLM can act on the computer during replay: read/write files, run shell commands and code, control a browser"
+          >
+            <TerminalSquare className="h-2.5 w-2.5" />
+            Agent tools on
+          </Badge>
           <StatusBadge status={status} />
         </div>
         {workflow.description && (
@@ -178,7 +188,7 @@ export function ReplayPanel() {
           ) : (
             <div key={entry.id} className={entry.msg.role === "user" ? "flex justify-end" : "flex justify-start"}>
               <div
-                className={`max-w-[88%] rounded-2xl border px-3 py-2 ${
+                className={`max-w-[92%] rounded-2xl border px-3 py-2 ${
                   entry.msg.role === "user"
                     ? "rounded-br-md border-amber-500/25 bg-amber-500/10"
                     : entry.msg.error
@@ -186,6 +196,7 @@ export function ReplayPanel() {
                       : "rounded-bl-md border-zinc-800 bg-zinc-900"
                 }`}
               >
+                {entry.msg.role === "assistant" && <ToolActivity calls={entry.msg.toolCalls ?? []} />}
                 {entry.msg.image && (
                    
                   <img

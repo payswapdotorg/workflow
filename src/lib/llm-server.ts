@@ -63,6 +63,8 @@ export async function fallbackComplete(system: string, messages: ServerLLMMessag
   return completion.choices[0]?.message?.content ?? "";
 }
 
+export { fallbackComplete as fallbackCompleteText };
+
 /** Extracts the first JSON object from an LLM reply (handles ``` fences and prose). */
 export function extractJson(text: string): Record<string, unknown> | null {
   if (!text) return null;
@@ -104,3 +106,5 @@ export async function customComplete(
   const data = await res.json();
   return data?.choices?.[0]?.message?.content ?? "";
 }
+
+export { customComplete as customCompleteText };

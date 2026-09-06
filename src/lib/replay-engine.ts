@@ -1,7 +1,7 @@
 "use client";
 
-import { captureFrame, imagePart, streamChat, textPart } from "./screen";
-import { REPLAY_CHAT_SYSTEM, REPLAY_NARRATION_SYSTEM } from "./prompts";
+import { captureFrame, createToolCollector, imagePart, streamChat, textPart } from "./screen";
+import { REPLAY_CHAT_SYSTEM_WITH_TOOLS, REPLAY_NARRATION_SYSTEM_WITH_TOOLS } from "./prompts";
 import { useAppStore } from "./store";
 import { stepInstruction, uid, type LLMMessage, type LLMMessagePart, type StepDTO, type WorkflowDTO } from "./types";
 
@@ -100,11 +100,15 @@ class ReplayEngine {
     st.pushReplayMessage({ id: msgId, role: "assistant", text: "", ts: Date.now(), streaming: true });
     try {
       await streamChat({
-        system: REPLAY_NARRATION_SYSTEM,
+        system: REPLAY_NARRATION_SYSTEM_WITH_TOOLS,
         messages: [{ role: "user", content: parts }],
+        enableTools: true,
         onDelta: (d) => {
           if (!this.isStale(id)) useAppStore.getState().appendReplayMessage(msgId, d);
         },
+        onTool: createToolCollector((toolCalls) => {
+          if (!this.isStale(id)) useAppStore.getState().patchReplayMessage(msgId, { toolCalls });
+        }),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LLM call failed";
@@ -157,9 +161,13 @@ class ReplayEngine {
     st.pushReplayMessage({ id: asstId, role: "assistant", text: "", ts: Date.now(), streaming: true });
     try {
       await streamChat({
-        system: REPLAY_CHAT_SYSTEM,
+        system: REPLAY_CHAT_SYSTEM_WITH_TOOLS,
         messages: history,
+        enableTools: true,
         onDelta: (d) => useAppStore.getState().appendReplayMessage(asstId, d),
+        onTool: createToolCollector((toolCalls) =>
+          useAppStore.getState().patchReplayMessage(asstId, { toolCalls })
+        ),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LLM call failed";

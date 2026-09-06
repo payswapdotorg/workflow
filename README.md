@@ -4,9 +4,9 @@ Share your real screen, teach a real LLM a workflow through a live narrated sess
 
 ## What it does
 
-- **Session** — a split view: your live screen on the left (browser Screen Capture API, streamed locally), a teaching chat on the right. Every chat message and manual snapshot captures a canvas frame of your screen at that exact moment and records it as an event with a timestamp.
+- **Session** — a split view: your live screen on the left (browser Screen Capture API, streamed locally), a teaching chat on the right. Every chat message and manual snapshot captures a canvas frame of your screen at that exact moment and records it as an event with a timestamp. The assistant has the full agent toolset and can act on the computer when you ask it to.
 - **Library** — saved workflows appear as app cards (name, description, step count, last run). Install a workflow to make it launchable.
-- **Replay** — launching a workflow replays it step by step against your live screen: progress bar, per-step cards with the active step highlighted, Pause/Resume/Stop controls, and per-step LLM narration analyzing live frames. You can chat with the LLM mid-replay.
+- **Replay** — launching a workflow replays it step by step against your live screen: progress bar, per-step cards with the active step highlighted, Pause/Resume/Stop controls, and per-step LLM narration analyzing live frames. The narrator can **act on the computer** to perform steps (create files, run commands, drive a browser). You can chat with the LLM mid-replay.
 - **Settings** — connect any OpenAI-compatible provider (endpoint + model + API key). The key is stored server-side (SQLite via Prisma) and never exposed to the browser. Without a custom provider, TeachCast uses a real built-in LLM (text-only, no mocks).
 
 ## Requirements
@@ -39,7 +39,22 @@ bun run start
 | Streaming chat | `src/app/api/chat/route.ts` | OpenAI-compatible SSE passthrough for custom providers; real built-in LLM fallback |
 | Workflow compile | `src/app/api/compile/route.ts` | the LLM compiles recorded events into named, replayable steps |
 | Replay engine | `src/lib/replay-engine.ts` | module-level runner: pause/resume/stop, per-step narration, run marking |
+| Agent toolset | `src/lib/tool-catalog.ts`, `src/lib/tools.ts`, `src/app/api/tools/exec/route.ts` | mirrors the chat.z.ai agent toolset — `read_file`, `write_file`, `run_shell`, `run_code`, `browser_control` — executed for real on the host, rooted at `workspace/` |
 | Settings | `src/app/api/settings/route.ts` | endpoint/model/key stored server-side, key masked in responses |
+
+## Agent toolset
+
+TeachCast's LLM mirrors the chat.z.ai agent toolset and can act on the computer, not just narrate:
+
+| Tool | What it does |
+|------|--------------|
+| `read_file` | read a workspace file or list a directory |
+| `write_file` | create / overwrite / append a workspace file |
+| `run_shell` | run a bash command (workspace cwd, 30s default timeout) |
+| `run_code` | execute Python or Node.js scripts |
+| `browser_control` | drive a real Chromium: open, snapshot, click, type, url, close |
+
+Tools are enabled in teaching chat, replay narration, and replay chat. Custom OpenAI-compatible providers use native function calling; providers without function-call support automatically fall back to a JSON tool protocol. Tool executions stream into the UI as live activity rows with expandable output. All file/code tools are rooted at the auto-created `workspace/` directory; path traversal outside it is blocked.
 
 ## Privacy
 

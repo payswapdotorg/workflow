@@ -67,3 +67,6 @@ Caddyfile
 agent-ctx/
 .agent-ctx
 server.log
+
+# agent toolset runtime workspace
+workspace/

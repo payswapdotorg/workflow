@@ -1,4 +1,4 @@
-import type { LLMMessage, LLMMessagePart } from "./types";
+import type { LLMMessage, LLMMessagePart, ToolEvent } from "./types";
 
 /* ------------------------------------------------------------------ */
 /* Live frame capture                                                  */
@@ -45,10 +45,12 @@ export async function streamChat(opts: {
   system: string;
   messages: LLMMessage[];
   onDelta: (delta: string) => void;
+  onTool?: (event: ToolEvent) => void;
+  enableTools?: boolean;
   signal?: AbortSignal;
-  /** Max total wall-clock time for the whole stream (default 120s). */
+  /** Max total wall-clock time for the whole stream (default 240s in tool mode). */
   totalTimeoutMs?: number;
-  /** Max silence between chunks before the stream is considered hung (default 45s). */
+  /** Max silence between chunks before the stream is considered hung (default 60s in tool mode). */
   idleTimeoutMs?: number;
 }): Promise<string> {
   /* Watchdogs: a wedged SSE (open but silent) used to leave the UI stuck in
@@ -62,14 +64,14 @@ export async function streamChat(opts: {
 
   const totalTimer = setTimeout(
     () => controller.abort(new DOMException("LLM stream timed out", "TimeoutError")),
-    opts.totalTimeoutMs ?? 120_000
+    opts.totalTimeoutMs ?? (opts.enableTools ? 240_000 : 120_000)
   );
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const resetIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(
       () => controller.abort(new DOMException("LLM stream stalled", "TimeoutError")),
-      opts.idleTimeoutMs ?? 45_000
+      opts.idleTimeoutMs ?? (opts.enableTools ? 75_000 : 45_000)
     );
   };
 
@@ -77,7 +79,7 @@ export async function streamChat(opts: {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system: opts.system, messages: opts.messages }),
+      body: JSON.stringify({ system: opts.system, messages: opts.messages, enableTools: opts.enableTools === true }),
       signal: controller.signal,
     });
 
@@ -121,6 +123,14 @@ export async function streamChat(opts: {
         if (payload === "[DONE]") return full;
         try {
           const json = JSON.parse(payload);
+          if (json?.tool && opts.onTool) {
+            opts.onTool(json.tool as ToolEvent);
+            continue;
+          }
+          if (json?.tool_result && opts.onTool) {
+            opts.onTool(json.tool_result as ToolEvent);
+            continue;
+          }
           const delta: unknown = json?.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta) {
             full += delta;
@@ -145,6 +155,35 @@ export async function streamChat(opts: {
     if (idleTimer) clearTimeout(idleTimer);
     opts.signal?.removeEventListener("abort", onExternalAbort);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Tool-event collector                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Accumulates tool events from streamChat into an ordered ToolEvent[] and
+ * pushes each update to the given callback (so the UI can render live tool
+ * activity on the assistant message while it is being produced).
+ */
+export function createToolCollector(patch: (toolCalls: ToolEvent[]) => void) {
+  const tools = new Map<string, ToolEvent>();
+  return (e: ToolEvent) => {
+    if (e.status === "running") {
+      tools.set(e.id, { id: e.id, name: e.name, args: e.args, status: "running" });
+    } else {
+      const prev = tools.get(e.id);
+      tools.set(e.id, {
+        id: e.id,
+        name: e.name,
+        args: prev?.args ?? e.args,
+        ok: e.ok,
+        output: e.output,
+        status: "done",
+      });
+    }
+    patch([...tools.values()]);
+  };
 }
 
 /* ------------------------------------------------------------------ */
