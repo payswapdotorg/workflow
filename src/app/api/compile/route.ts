@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { customComplete, extractJson, fallbackComplete, getProviderSettings, type ServerLLMMessage } from "@/lib/llm-server";
 import { COMPILE_SYSTEM, buildCompileUserPrompt } from "@/lib/prompts";
+import { withRouteTimeout } from "@/lib/api-guard";
 import type { CompiledStep } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -13,7 +14,7 @@ interface IncomingEvent {
   note?: unknown;
 }
 
-export async function POST(req: NextRequest) {
+async function POST_impl(req: NextRequest) {
   let body: { events?: unknown };
   try {
     body = await req.json();
@@ -88,3 +89,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ name, description, steps });
 }
+
+/* A real LLM compile of up to 200 events can legitimately take a while — the
+   120s budget reflects that while still bounding the worst case. */
+export const POST = withRouteTimeout(POST_impl, { timeoutMs: 120_000, label: "compile" });

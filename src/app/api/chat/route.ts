@@ -13,6 +13,13 @@ import { withToolProtocol } from "@/lib/prompts";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+/* Deliberately NOT wrapped in withRouteTimeout(): this route streams SSE —
+   the response is already flowing while the LLM works, so a wrapper would
+   only be able to "time out" before the stream starts. The stream is instead
+   bounded by its own watchdogs (45s idle abort, 120s total abort in the
+   client's streamChat, plus the 15s keepalive that keeps intermediaries from
+   giving up). Every non-streaming JSON route IS wrapped. */
+
 function sse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }

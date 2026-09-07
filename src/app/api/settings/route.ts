@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { withRouteTimeout } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 
@@ -16,52 +17,58 @@ function serialize(s: { endpoint: string; apiKey: string; model: string }) {
   };
 }
 
-export async function GET() {
-  const s = await db.settings.findUnique({ where: { id: "singleton" } });
-  return NextResponse.json(
-    serialize({
-      endpoint: s?.endpoint ?? "",
-      apiKey: s?.apiKey ?? "",
-      model: s?.model ?? "",
-    })
-  );
-}
+export const GET = withRouteTimeout(
+  async () => {
+    const s = await db.settings.findUnique({ where: { id: "singleton" } });
+    return NextResponse.json(
+      serialize({
+        endpoint: s?.endpoint ?? "",
+        apiKey: s?.apiKey ?? "",
+        model: s?.model ?? "",
+      })
+    );
+  },
+  { timeoutMs: 30_000, label: "settings.get" }
+);
 
-export async function PUT(req: NextRequest) {
-  let body: { endpoint?: unknown; model?: unknown; apiKey?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const data: { endpoint?: string; model?: string; apiKey?: string } = {};
-
-  if (body.endpoint !== undefined) {
-    const endpoint = String(body.endpoint).trim();
-    if (endpoint && !/^https?:\/\//i.test(endpoint)) {
-      return NextResponse.json(
-        { error: "Endpoint must be an http(s) URL, e.g. https://api.openai.com/v1" },
-        { status: 400 }
-      );
+export const PUT = withRouteTimeout(
+  async (req: NextRequest) => {
+    let body: { endpoint?: unknown; model?: unknown; apiKey?: unknown };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    data.endpoint = endpoint;
-  }
 
-  if (body.model !== undefined) {
-    data.model = String(body.model).trim();
-  }
+    const data: { endpoint?: string; model?: string; apiKey?: string } = {};
 
-  // apiKey: omitted => keep existing; string => set (empty string clears)
-  if (typeof body.apiKey === "string") {
-    data.apiKey = body.apiKey.trim();
-  }
+    if (body.endpoint !== undefined) {
+      const endpoint = String(body.endpoint).trim();
+      if (endpoint && !/^https?:\/\//i.test(endpoint)) {
+        return NextResponse.json(
+          { error: "Endpoint must be an http(s) URL, e.g. https://api.openai.com/v1" },
+          { status: 400 }
+        );
+      }
+      data.endpoint = endpoint;
+    }
 
-  const s = await db.settings.upsert({
-    where: { id: "singleton" },
-    update: data,
-    create: { id: "singleton", ...data },
-  });
+    if (body.model !== undefined) {
+      data.model = String(body.model).trim();
+    }
 
-  return NextResponse.json(serialize({ endpoint: s.endpoint, apiKey: s.apiKey, model: s.model }));
-}
+    // apiKey: omitted => keep existing; string => set (empty string clears)
+    if (typeof body.apiKey === "string") {
+      data.apiKey = body.apiKey.trim();
+    }
+
+    const s = await db.settings.upsert({
+      where: { id: "singleton" },
+      update: data,
+      create: { id: "singleton", ...data },
+    });
+
+    return NextResponse.json(serialize({ endpoint: s.endpoint, apiKey: s.apiKey, model: s.model }));
+  },
+  { timeoutMs: 30_000, label: "settings.put" }
+);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { executeTool } from "@/lib/tools";
 import { TOOL_DEFINITIONS } from "@/lib/tool-catalog";
+import { withRouteTimeout } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -15,7 +16,7 @@ export async function GET() {
   });
 }
 
-export async function POST(req: NextRequest) {
+async function POST_impl(req: NextRequest) {
   let body: { tool?: unknown; args?: unknown };
   try {
     body = await req.json();
@@ -41,3 +42,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+/* executeTool has its own internal 30s budget + margin; the guard is the
+   outer safety net so the client can never wait in silence. */
+export const POST = withRouteTimeout(POST_impl, { timeoutMs: 60_000, label: "tools.exec" });
