@@ -6,7 +6,7 @@ import {
   getProviderSettings,
   type ServerLLMMessage,
 } from "@/lib/llm-server";
-import { executeTool } from "@/lib/tools";
+import { executeTool, MANAGED_BROWSER_SESSION } from "@/lib/tools";
 import { openAIToolSchema, TOOL_DEFINITIONS } from "@/lib/tool-catalog";
 import { withToolProtocol } from "@/lib/prompts";
 
@@ -23,11 +23,18 @@ const sseHeaders = {
   Connection: "keep-alive",
 };
 
+/** Which agent-browser profile browser_control acts on. Strict whitelist —
+ *  "managed" scopes the console LLM to its dedicated supervised browser,
+ *  everything else (and the default) stays on the workflow/agent browser. */
+function resolveBrowserSession(raw: unknown): string {
+  return raw === "managed" ? MANAGED_BROWSER_SESSION : "teachcast-agent";
+}
+
 /* Architect review (PR #1): 5 starved multi-step tasks — 12-16 required. */
 const MAX_TOOL_ITERATIONS = 14;
 
 export async function POST(req: NextRequest) {
-  let body: { system?: unknown; messages?: unknown; enableTools?: unknown };
+  let body: { system?: unknown; messages?: unknown; enableTools?: unknown; browserTarget?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -58,6 +65,7 @@ export async function POST(req: NextRequest) {
     }
   }
   const llmMessages = structuredClone(messages) as ServerLLMMessage[];
+  const browserSession = resolveBrowserSession(body.browserTarget);
 
   const info = await getProviderSettings();
 
@@ -132,9 +140,9 @@ export async function POST(req: NextRequest) {
            client prompts (TEACH_SYSTEM_WITH_TOOLS etc.) pass through. */
         const toolSystem = withToolProtocol(system);
         if (info.custom) {
-          finalText = await runCustomToolLoop(info, toolSystem, llmMessages, emit);
+          finalText = await runCustomToolLoop(info, toolSystem, llmMessages, emit, browserSession);
         } else {
-          finalText = await runJsonToolLoop(toolSystem, llmMessages, emit);
+          finalText = await runJsonToolLoop(toolSystem, llmMessages, emit, browserSession);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "unknown error";
@@ -180,7 +188,8 @@ function toolId(): string {
 async function execAndEmit(
   name: string,
   rawArgs: string,
-  emit: (data: unknown) => void
+  emit: (data: unknown) => void,
+  browserSession: string
 ): Promise<string> {
   const id = toolId();
   let args: Record<string, unknown> = {};
@@ -191,7 +200,7 @@ async function execAndEmit(
   }
   emit({ tool: { id, name, args, status: "running" } });
   try {
-    const output = await executeTool(name, args);
+    const output = await executeTool(name, args, { browserSession });
     emit({ tool_result: { id, name, ok: true, output, status: "done" } });
     return output;
   } catch (err) {
@@ -211,7 +220,8 @@ async function runCustomToolLoop(
   info: ProviderInfo,
   system: string,
   llmMessages: ServerLLMMessage[],
-  emit: (data: unknown) => void
+  emit: (data: unknown) => void,
+  browserSession: string
 ): Promise<string> {
   const convo: CustomMsg[] = [
     { role: "system", content: system },
@@ -235,7 +245,7 @@ async function runCustomToolLoop(
       const text = await res.text().catch(() => "");
       /* Provider may not support function calling — fall back to the JSON protocol. */
       if (res.status === 400 || res.status === 404 || res.status === 422) {
-        return runJsonToolLoop(system, llmMessages, emit);
+        return runJsonToolLoop(system, llmMessages, emit, browserSession);
       }
       throw new Error(`Provider error ${res.status}: ${text.slice(0, 300)}`);
     }
@@ -261,7 +271,7 @@ async function runCustomToolLoop(
           ? (parsed.tool as string)
           : null;
       if (jsonTool) {
-        const output = await execAndEmit(jsonTool, JSON.stringify(parsed?.args ?? {}), emit);
+        const output = await execAndEmit(jsonTool, JSON.stringify(parsed?.args ?? {}), emit, browserSession);
         convo.push({ role: "assistant", content: content.trim().slice(0, 4000) });
         convo.push({
           role: "user",
@@ -276,7 +286,7 @@ async function runCustomToolLoop(
     for (const call of toolCalls) {
       const name = call.function?.name ?? "";
       const argsRaw = call.function?.arguments ?? "{}";
-      const output = await execAndEmit(name, argsRaw, emit);
+      const output = await execAndEmit(name, argsRaw, emit, browserSession);
       convo.push({ role: "tool", tool_call_id: call.id ?? name, content: output.slice(0, 12_000) });
     }
   }
@@ -300,7 +310,8 @@ import { extractJson, type ProviderInfo } from "@/lib/llm-server";
 async function runJsonToolLoop(
   system: string,
   llmMessages: ServerLLMMessage[],
-  emit: (data: unknown) => void
+  emit: (data: unknown) => void,
+  browserSession: string
 ): Promise<string> {
   const info = await getProviderSettings();
   const convo = llmMessages.map((m) => ({ ...m }));
@@ -319,7 +330,14 @@ async function runJsonToolLoop(
       return reply.trim();
     }
 
-    const output = await execAndEmit(toolName, JSON.stringify(parsed.args ?? {}), emit);
+    /* Asymmetry note (architect, PR #3 review): an UNKNOWN name parsed out of
+       a protocol-formatted reply is executed anyway and comes back as
+       "Error: Unknown tool ..." — the model EXPLICITLY attempted a tool call
+       in the agreed channel, so it must see a real error to self-correct.
+       The custom-loop bridge behaves differently on purpose: there the JSON
+       appeared inside ordinary prose (no protocol attempt), so unknown names
+       are left as prose and never executed. */
+    const output = await execAndEmit(toolName, JSON.stringify(parsed.args ?? {}), emit, browserSession);
     convo.push({ role: "assistant", content: reply.trim().slice(0, 4000) });
     convo.push({
       role: "user",

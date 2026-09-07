@@ -133,13 +133,18 @@ export interface RecoveryRecord {
 }
 
 /* ------------------------------------------------------------------ */
-/* Managed external session (groundwork — chat.z.ai preview panel)     */
+/* Managed external session (M4 — chat.z.ai supervised from the console)*/
 /* ------------------------------------------------------------------ */
 
 export interface ManagedSessionStatus {
   active: boolean;
   url: string | null;
+  /** Live page title of the managed browser (empty until connected). */
+  title: string | null;
+  /** Latest a11y text snapshot of the managed page. */
   snapshot: string | null;
+  /** Latest REAL frame of the managed page (PNG screenshot as data URL). */
+  frame: string | null;
   snapshotAt: string | null;
   error: string | null;
 }

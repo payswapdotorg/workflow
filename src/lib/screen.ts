@@ -56,6 +56,10 @@ export async function streamChat(opts: {
    *  session-watchdog.ts must only see genuine movement, not liveness pings. */
   onActivity?: () => void;
   enableTools?: boolean;
+  /** Browser scope for the agent toolset's browser_control: "agent" (default,
+   *  workflow/agent browser) or "managed" (the operator console's dedicated
+   *  supervised session). Passed through to the server-side executor. */
+  browserTarget?: "agent" | "managed";
   signal?: AbortSignal;
   /** Max total wall-clock time for the whole stream (default 600s in tool mode). */
   totalTimeoutMs?: number;
@@ -89,7 +93,12 @@ export async function streamChat(opts: {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system: opts.system, messages: opts.messages, enableTools: opts.enableTools === true }),
+      body: JSON.stringify({
+        system: opts.system,
+        messages: opts.messages,
+        enableTools: opts.enableTools === true,
+        browserTarget: opts.browserTarget === "managed" ? "managed" : "agent",
+      }),
       signal: controller.signal,
     });
 
