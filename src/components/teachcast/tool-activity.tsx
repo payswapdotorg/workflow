@@ -35,7 +35,14 @@ function summarize(e: ToolEvent): string {
     case "run_code":
       return `${String(a.language ?? "")} · ${String(a.code ?? "").length} chars`;
     case "browser_control":
-      return [String(a.action ?? ""), a.url ? String(a.url) : "", a.selector ? String(a.selector) : ""]
+      return [
+        String(a.action ?? ""),
+        a.url ? String(a.url) : "",
+        a.ref ? String(a.ref).startsWith("@") ? String(a.ref) : `@${a.ref}` : "",
+        a.key ? `key:${a.key}` : "",
+        a.direction ? `→ ${a.direction}` : "",
+        a.mode ? String(a.mode) : "",
+      ]
         .filter(Boolean)
         .join(" ");
     default:
