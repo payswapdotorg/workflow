@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
 import { TOOL_DEFINITIONS, isKnownTool } from "./tool-catalog";
+import { createBrowserTool, realCliRunner } from "./browser-tool";
 
 /**
  * TeachCast agent toolset — server-side executor.
@@ -117,7 +118,7 @@ async function runCode(args: Record<string, unknown>): Promise<string> {
 }
 
 /* ------------------------------------------------------------------ */
-/* Browser control — drives the agent-browser CLI (a real Chromium)    */
+/* Browser control — production computer-use engine (M5)               */
 /* ------------------------------------------------------------------ */
 
 const BROWSER_SESSION = "teachcast-agent";
@@ -126,52 +127,10 @@ const BROWSER_SESSION = "teachcast-agent";
  *  replays so the operator can watch and steer it without interference. */
 export const MANAGED_BROWSER_SESSION = "teachcast-managed";
 
-async function browserCli(subcommand: string, timeoutMs = 45_000, session = BROWSER_SESSION): Promise<string> {
-  const r = await runCommand(`agent-browser --session ${session} ${subcommand} 2>&1`, {
-    cwd: WORKSPACE_ROOT,
-    timeoutMs,
-  });
-  return r.output;
-}
-
-async function browserControl(args: Record<string, unknown>, session = BROWSER_SESSION): Promise<string> {
-  const action = String(args.action ?? "").toLowerCase();
-  switch (action) {
-    case "open": {
-      const url = String(args.url ?? "").trim();
-      if (!/^https?:\/\//i.test(url)) throw new Error("browser_control open requires an http(s) url.");
-      const out = await browserCli(`open "${url}"`, 45_000, session);
-      return `Browser opened ${url}\n${clip(out, 2000)}`;
-    }
-    case "snapshot": {
-      const out = await browserCli("snapshot --text --compact", 45_000, session);
-      return clip(out);
-    }
-    case "click": {
-      const selector = String(args.selector ?? "").trim();
-      if (!selector) throw new Error("browser_control click requires a CSS selector.");
-      const out = await browserCli(`find css "${selector.replace(/"/g, '\\"')}" click`, 45_000, session);
-      return `Clicked "${selector}".\n${clip(out, 2000)}`;
-    }
-    case "type": {
-      const selector = String(args.selector ?? "").trim();
-      const text = String(args.text ?? "");
-      if (!selector) throw new Error("browser_control type requires a CSS selector.");
-      const out = await browserCli(`find css "${selector.replace(/"/g, '\\"')}" fill "${text.replace(/"/g, '\\"')}"`, 45_000, session);
-      return `Typed into "${selector}".\n${clip(out, 2000)}`;
-    }
-    case "url": {
-      const out = await browserCli("get url", 15_000, session);
-      return `Current URL: ${clip(out, 500)}`;
-    }
-    case "close": {
-      const out = await browserCli("close", 30_000, session);
-      return `Browser closed.\n${clip(out, 500)}`;
-    }
-    default:
-      throw new Error(`Unknown browser action "${action}". Use open | snapshot | click | type | url | close.`);
-  }
-}
+/** The M5 engine (src/lib/browser-tool.ts): one action union mapped onto the
+ *  real agent-browser CLI, stale-ref law, bounded recovery, structured
+ *  {code,message,remedy} errors, CLI exit codes propagated. */
+const browserTool = createBrowserTool({ runCli: realCliRunner, workspaceRoot: WORKSPACE_ROOT });
 
 /** Executes an agent tool by name. Throws on invalid usage; returns real output.
  *  opts.browserSession scopes browser_control to a concrete agent-browser
@@ -195,6 +154,6 @@ export async function executeTool(
     case "run_code":
       return runCode(args);
     case "browser_control":
-      return browserControl(args, browserSession);
+      return browserTool.handle(args, browserSession);
   }
 }
