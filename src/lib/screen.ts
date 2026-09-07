@@ -1,4 +1,4 @@
-import type { LLMMessage, LLMMessagePart } from "./types";
+import type { LLMMessage, LLMMessagePart, ToolEvent } from "./types";
 
 /* ------------------------------------------------------------------ */
 /* Live frame capture                                                  */
@@ -14,6 +14,11 @@ export function setActiveVideoEl(el: HTMLVideoElement | null) {
 /** Unregister on unmount — only clears if this element is still the active one. */
 export function clearActiveVideoEl(el: HTMLVideoElement | null) {
   if (activeVideo === el) activeVideo = null;
+}
+
+/** Read-only access for mirrors (e.g. the managed-session console sampler). */
+export function getActiveVideoEl(): HTMLVideoElement | null {
+  return activeVideo;
 }
 
 /**
@@ -45,10 +50,17 @@ export async function streamChat(opts: {
   system: string;
   messages: LLMMessage[];
   onDelta: (delta: string) => void;
+  onTool?: (event: ToolEvent) => void;
+  /** Fired on every sign of REAL progress (deltas, tool events, response headers).
+   *  Deliberately NOT fired by keepalive comments — the UI-level hang watchdog in
+   *  session-watchdog.ts must only see genuine movement, not liveness pings. */
+  onActivity?: () => void;
+  enableTools?: boolean;
   signal?: AbortSignal;
-  /** Max total wall-clock time for the whole stream (default 120s). */
+  /** Max total wall-clock time for the whole stream (default 600s in tool mode). */
   totalTimeoutMs?: number;
-  /** Max silence between chunks before the stream is considered hung (default 45s). */
+  /** Max silence between chunks before the stream is considered hung (default 75s in tool mode).
+   *  The server sends SSE keepalive comments during long tool runs, which feed this watchdog. */
   idleTimeoutMs?: number;
 }): Promise<string> {
   /* Watchdogs: a wedged SSE (open but silent) used to leave the UI stuck in
@@ -62,14 +74,14 @@ export async function streamChat(opts: {
 
   const totalTimer = setTimeout(
     () => controller.abort(new DOMException("LLM stream timed out", "TimeoutError")),
-    opts.totalTimeoutMs ?? 120_000
+    opts.totalTimeoutMs ?? (opts.enableTools ? 600_000 : 120_000)
   );
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const resetIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(
       () => controller.abort(new DOMException("LLM stream stalled", "TimeoutError")),
-      opts.idleTimeoutMs ?? 45_000
+      opts.idleTimeoutMs ?? (opts.enableTools ? 75_000 : 45_000)
     );
   };
 
@@ -77,7 +89,7 @@ export async function streamChat(opts: {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system: opts.system, messages: opts.messages }),
+      body: JSON.stringify({ system: opts.system, messages: opts.messages, enableTools: opts.enableTools === true }),
       signal: controller.signal,
     });
 
@@ -95,6 +107,7 @@ export async function streamChat(opts: {
     const contentType = res.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream")) {
       // Provider replied with a plain JSON completion
+      opts.onActivity?.();
       const data = await res.json();
       const text: string = data?.choices?.[0]?.message?.content ?? "";
       if (text) opts.onDelta(text);
@@ -121,8 +134,19 @@ export async function streamChat(opts: {
         if (payload === "[DONE]") return full;
         try {
           const json = JSON.parse(payload);
+          if (json?.tool && opts.onTool) {
+            opts.onActivity?.();
+            opts.onTool(json.tool as ToolEvent);
+            continue;
+          }
+          if (json?.tool_result && opts.onTool) {
+            opts.onActivity?.();
+            opts.onTool(json.tool_result as ToolEvent);
+            continue;
+          }
           const delta: unknown = json?.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta) {
+            opts.onActivity?.();
             full += delta;
             opts.onDelta(delta);
           }
@@ -145,6 +169,35 @@ export async function streamChat(opts: {
     if (idleTimer) clearTimeout(idleTimer);
     opts.signal?.removeEventListener("abort", onExternalAbort);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Tool-event collector                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Accumulates tool events from streamChat into an ordered ToolEvent[] and
+ * pushes each update to the given callback (so the UI can render live tool
+ * activity on the assistant message while it is being produced).
+ */
+export function createToolCollector(patch: (toolCalls: ToolEvent[]) => void) {
+  const tools = new Map<string, ToolEvent>();
+  return (e: ToolEvent) => {
+    if (e.status === "running") {
+      tools.set(e.id, { id: e.id, name: e.name, args: e.args, status: "running" });
+    } else {
+      const prev = tools.get(e.id);
+      tools.set(e.id, {
+        id: e.id,
+        name: e.name,
+        args: prev?.args ?? e.args,
+        ok: e.ok,
+        output: e.output,
+        status: "done",
+      });
+    }
+    patch([...tools.values()]);
+  };
 }
 
 /* ------------------------------------------------------------------ */

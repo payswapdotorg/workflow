@@ -11,6 +11,7 @@ import {
   MoreVertical,
   Play,
   Trash2,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -96,6 +97,41 @@ export function LibraryView() {
     }
   };
 
+  const toggleAutoLaunch = async (wf: WorkflowSummaryDTO) => {
+    setBusyId(wf.id);
+    try {
+      const res = await fetch(`/api/workflows/${wf.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoLaunch: !wf.autoLaunch }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
+      const updated = await res.json();
+      setWorkflows(
+        workflows.map((w) =>
+          w.id === wf.id
+            ? { ...w, autoLaunch: updated.autoLaunch }
+            : updated.autoLaunch
+              ? { ...w, autoLaunch: false } /* exclusive slot: only one app launches on start */
+              : w
+        )
+      );
+      if (updated.autoLaunch) {
+        toast.success(`TeachCast opens with “${wf.name}”`, {
+          description: "Launch-on-start is set — the app opens straight into this workflow.",
+        });
+      } else {
+        toast.info(`Launch-on-start removed for “${wf.name}”`);
+      }
+    } catch (err) {
+      toast.error("Could not update launch-on-start", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const remove = async (wf: WorkflowSummaryDTO) => {
     setBusyId(wf.id);
     try {
@@ -169,6 +205,11 @@ export function LibraryView() {
                           Draft
                         </Badge>
                       )}
+                      {wf.autoLaunch && (
+                        <Badge className="h-5 gap-1 border-transparent bg-amber-500/15 px-1.5 text-[10px] font-medium text-amber-300" title="Opens automatically when TeachCast starts">
+                          <Zap className="h-2.5 w-2.5" /> On start
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <DropdownMenu>
@@ -183,6 +224,12 @@ export function LibraryView() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="border-zinc-800 bg-zinc-900">
+                      {wf.installed && (
+                        <DropdownMenuItem onClick={() => toggleAutoLaunch(wf)}>
+                          <Zap className="mr-2 h-3.5 w-3.5" />
+                          {wf.autoLaunch ? "Remove launch-on-start" : "Launch on start"}
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
                         className="text-red-400 focus:bg-red-500/10 focus:text-red-300"
                         onClick={() => setDeleteTarget(wf)}

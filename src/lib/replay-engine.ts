@@ -1,8 +1,9 @@
 "use client";
 
-import { captureFrame, imagePart, streamChat, textPart } from "./screen";
-import { REPLAY_CHAT_SYSTEM, REPLAY_NARRATION_SYSTEM } from "./prompts";
+import { captureFrame, createToolCollector, imagePart, streamChat, textPart } from "./screen";
+import { REPLAY_CHAT_SYSTEM_WITH_TOOLS, REPLAY_NARRATION_SYSTEM_WITH_TOOLS } from "./prompts";
 import { useAppStore } from "./store";
+import { sessionWatchdog } from "./session-watchdog";
 import { stepInstruction, uid, type LLMMessage, type LLMMessagePart, type StepDTO, type WorkflowDTO } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -98,17 +99,25 @@ class ReplayEngine {
 
     const msgId = uid();
     st.pushReplayMessage({ id: msgId, role: "assistant", text: "", ts: Date.now(), streaming: true });
+    sessionWatchdog.beginTurn("replay");
     try {
       await streamChat({
-        system: REPLAY_NARRATION_SYSTEM,
+        system: REPLAY_NARRATION_SYSTEM_WITH_TOOLS,
         messages: [{ role: "user", content: parts }],
+        enableTools: true,
+        onActivity: () => sessionWatchdog.activity(),
         onDelta: (d) => {
           if (!this.isStale(id)) useAppStore.getState().appendReplayMessage(msgId, d);
         },
+        onTool: createToolCollector((toolCalls) => {
+          if (!this.isStale(id)) useAppStore.getState().patchReplayMessage(msgId, { toolCalls });
+        }),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LLM call failed";
       useAppStore.getState().patchReplayMessage(msgId, { text: `LLM narration failed: ${message}`, error: true });
+    } finally {
+      sessionWatchdog.endTurn();
     }
     if (this.isStale(id)) return;
     useAppStore.getState().patchReplayMessage(msgId, { streaming: false });
@@ -155,15 +164,23 @@ class ReplayEngine {
 
     const asstId = uid();
     st.pushReplayMessage({ id: asstId, role: "assistant", text: "", ts: Date.now(), streaming: true });
+    sessionWatchdog.beginTurn("replay");
     try {
       await streamChat({
-        system: REPLAY_CHAT_SYSTEM,
+        system: REPLAY_CHAT_SYSTEM_WITH_TOOLS,
         messages: history,
+        enableTools: true,
+        onActivity: () => sessionWatchdog.activity(),
         onDelta: (d) => useAppStore.getState().appendReplayMessage(asstId, d),
+        onTool: createToolCollector((toolCalls) =>
+          useAppStore.getState().patchReplayMessage(asstId, { toolCalls })
+        ),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LLM call failed";
       useAppStore.getState().patchReplayMessage(asstId, { text: `LLM call failed: ${message}`, error: true });
+    } finally {
+      sessionWatchdog.endTurn();
     }
     useAppStore.getState().patchReplayMessage(asstId, { streaming: false });
   }

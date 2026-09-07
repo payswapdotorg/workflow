@@ -46,22 +46,33 @@ function contentToText(content: unknown): string {
 }
 
 /**
+ * Pinned built-in model. Parity requires a deterministic model — the SDK's
+ * silent default must never drift. Probed against the live backend: requests
+ * are served by "glm-4-plus" (the backend reports this name for its default),
+ * so we pin exactly that instead of relying on SDK-side defaults.
+ */
+export const BUILTIN_MODEL = "glm-4-plus";
+
+/**
  * Built-in fallback provider — a real LLM behind z-ai-web-dev-sdk (server-side only).
  * Used when no custom OpenAI-compatible provider is configured.
  */
 export async function fallbackComplete(system: string, messages: ServerLLMMessage[]): Promise<string> {
   const zai = await ZAI.create();
-  const msgs: Array<{ role: string; content: string }> = [{ role: "assistant", content: system }];
+  const msgs: Array<{ role: string; content: string }> = [{ role: "system", content: system }];
   for (const m of messages) {
     if (m.role === "system") continue;
     msgs.push({ role: m.role, content: contentToText(m.content) });
   }
   const completion = await zai.chat.completions.create({
+    model: BUILTIN_MODEL,
     messages: msgs as never,
     thinking: { type: "disabled" },
   });
   return completion.choices[0]?.message?.content ?? "";
 }
+
+export { fallbackComplete as fallbackCompleteText };
 
 /** Extracts the first JSON object from an LLM reply (handles ``` fences and prose). */
 export function extractJson(text: string): Record<string, unknown> | null {
@@ -104,3 +115,5 @@ export async function customComplete(
   const data = await res.json();
   return data?.choices?.[0]?.message?.content ?? "";
 }
+
+export { customComplete as customCompleteText };
