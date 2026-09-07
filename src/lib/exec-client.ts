@@ -102,6 +102,11 @@ export async function startExecRun(workflowId: string, workflowName: string): Pr
           } else {
             s.pushExecLog(entry);
           }
+        } else if (e.type === "note") {
+          /* M8: throttle deferrals and other mid-run notices — visible in the
+             run log, exactly as the server phrased them. */
+          const text = String(e.text ?? "").trim();
+          if (text) s.pushExecLog({ id: uid(), type: "msg", role: "assistant", text });
         } else if (e.type === "done") {
           const ok = e.ok === true;
           s.patchExecRun({ status: ok ? "finished" : "failed" });

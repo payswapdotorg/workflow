@@ -83,7 +83,7 @@ Answer with EXACTLY ONE JSON object and nothing else:
 Rules:
 - "ref" MUST come from the CURRENT accessibility snapshot you were given — never invent refs, never reuse refs from a previous step.
 - Choose the element by MEANING (its role, text, placeholder, label), using the captured position and frame as supporting evidence, not as the decision.
-- "expect" describes the world AFTER the action succeeds and MUST anchor to the DESTINATION/state, never to the element you act on: for a navigation click use a URL fragment or text that exists on the TARGET page (the clicked link's own label disappears on arrival); for a dialog use the dialog's title. If you cannot name a reliable postcondition, return expect:null — a missing expect is honest, a wrong one fails good runs.
+- "expect" describes the world AFTER the action succeeds. It MUST anchor to the DESTINATION/state, never to the element you act on, and NEVER to the current page's own text: a click usually leaves the current page, so text visible NOW is expected to be GONE after a successful navigation. For a navigation click prefer a URL fragment (urlContains) when you know the destination, else text that exists ONLY on the target page — concrete example: clicking the 'More information' link on example.com must expect {"urlContains":"iana.org"}, NEVER {"textContains":"Example Domain"} (that is the current page's own heading). For a dialog use the dialog's title. If you cannot name a reliable postcondition, return expect:null — a missing expect is honest, a wrong one fails good runs.
 - For a "type" step, always resolve the target TEXT FIELD by ref; coords are not acceptable for typing.`;
 
 
