@@ -69,8 +69,6 @@ class Suite:
         self.check("home.snapshot.teach_cta", "Share your screen" in out, out[:200])
 
     def t_library_crud(self):
-        ok, out = ab("click", "@e15")  # Library nav (from home snapshot refs)
-        ab("wait", "--text", "Library", "--timeout-ms", "15000")
         code, body = http("GET", "/api/workflows")
         self.check("library.list.api", code == 200, f"HTTP {code}")
         code, body = http("POST", "/api/workflows", {
