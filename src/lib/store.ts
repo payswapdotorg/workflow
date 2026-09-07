@@ -13,11 +13,8 @@ import type {
   View,
   WorkflowDTO,
   WorkflowSummaryDTO,
-  ExecLogEntry,
-  ExecRunState,
 } from "./types";
 import { uid } from "./types";
-import type { DraftStep } from "./teach-capture";
 
 /* ------------------------------------------------------------------ */
 /* Replay log helpers                                                  */
@@ -109,33 +106,6 @@ interface AppState {
   /* boot recovery (populated from localStorage by page.tsx, consumed by the composer) */
   pendingRecovery: { kind: string; text: string; resubmit: boolean } | null;
   setPendingRecovery: (r: { kind: string; text: string; resubmit: boolean } | null) => void;
-
-  /* ---------------- M7 dual-cursor teaching ---------------- */
-  /** Teaching-chat mode: "teach" (user demonstrates on the shared screen) or
-   *  "act" (the LLM acts on the managed browser, cursor mirrored). The stage
-   *  reads this to switch surfaces and to label them honestly. */
-  chatMode: "teach" | "act";
-  setChatMode: (m: "teach" | "act") => void;
-  /** Learning capture: the raw event buffer lives in the module-level
-   *  teachCapture singleton (high-frequency pointer events must not re-render
-   *  the tree); the store mirrors only what the UI renders. */
-  captureArmed: boolean;
-  captureEventCount: number;
-  setCaptureArmed: (v: boolean) => void;
-  setCaptureEventCount: (n: number) => void;
-  /** Synthesized draft workflow (from "learn this") pending review/save. */
-  draftSteps: DraftStep[] | null;
-  setDraftSteps: (s: DraftStep[] | null) => void;
-  /** Live execution run (POST /api/execute) streamed into the chat. */
-  execRun: ExecRunState | null;
-  setExecRun: (r: ExecRunState | null) => void;
-  patchExecRun: (patch: Partial<ExecRunState>) => void;
-  pushExecLog: (entry: ExecLogEntry) => void;
-  /** Last real screenshot of the managed browser (data URL) — the act-mode
-   *  surface mirrored on the stage while the LLM cursor moves over it. */
-  managedFrame: string | null;
-  managedUrl: string | null;
-  setManagedFrame: (frame: string | null, url?: string | null) => void;
 }
 
 function createAppStore() {
@@ -258,25 +228,6 @@ function createAppStore() {
 
     pendingRecovery: null,
     setPendingRecovery: (pendingRecovery) => set({ pendingRecovery }),
-
-    /* ---------------- M7 dual-cursor teaching ---------------- */
-    chatMode: "teach",
-    setChatMode: (chatMode) => set({ chatMode }),
-    captureArmed: false,
-    captureEventCount: 0,
-    setCaptureArmed: (captureArmed) => set({ captureArmed }),
-    setCaptureEventCount: (captureEventCount) => set({ captureEventCount }),
-    draftSteps: null,
-    setDraftSteps: (draftSteps) => set({ draftSteps }),
-    execRun: null,
-    setExecRun: (execRun) => set({ execRun }),
-    patchExecRun: (patch) => set((s) => (s.execRun ? { execRun: { ...s.execRun, ...patch } } : {})),
-    pushExecLog: (entry) =>
-      set((s) => (s.execRun ? { execRun: { ...s.execRun, log: [...s.execRun.log, entry] } } : {})),
-    managedFrame: null,
-    managedUrl: null,
-    setManagedFrame: (managedFrame, managedUrl) =>
-      set((s) => ({ managedFrame, managedUrl: managedUrl === undefined ? s.managedUrl : managedUrl })),
   }));
 }
 

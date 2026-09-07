@@ -1,6 +1,6 @@
 export type View = "session" | "library" | "replay" | "settings";
 
-export type StepKind = "message" | "snapshot" | "action";
+export type StepKind = "message" | "snapshot";
 
 /** Free-form per-kind payload. `image` is a JPEG data URL captured from the live screen. */
 export interface StepPayload {
@@ -9,25 +9,11 @@ export interface StepPayload {
   note?: string;
 }
 
-/** M7 action step — a taught click/keystroke with its capture-space context.
- *  x/y are NORMALIZED (0..1) hints from the demonstration; on execution they
- *  are RE-RESOLVED against a fresh snapshot (never blindly replayed). `thumb`
- *  is the frame grabbed at teaching time — the visual context the executor
- *  re-grounds against. */
-export interface ActionStepPayload {
-  actionType: "click" | "type";
-  x?: number;
-  y?: number;
-  text?: string;
-  label: string;
-  thumb?: string | null;
-}
-
-/** Step {kind: message|snapshot|action, payload, ts} */
+/** Step {kind: message|snapshot, payload, ts} */
 export interface StepDTO {
   id: string;
   kind: StepKind;
-  payload: StepPayload & Partial<ActionStepPayload>;
+  payload: StepPayload;
   ts: string;
   order: number;
 }
@@ -36,7 +22,7 @@ export interface StepDTO {
 export interface RecordedStep {
   id: string;
   kind: StepKind;
-  payload: StepPayload & Partial<ActionStepPayload>;
+  payload: StepPayload;
   ts: string;
 }
 
@@ -167,28 +153,11 @@ export type ReplayLogEntry =
   | { id: string; type: "step"; step: StepDTO; stepIndex: number; done: boolean }
   | { id: string; type: "msg"; msg: ChatMessage };
 
-/* ------------------------------------------------------------------ */
-/* M7 — workflow execution on the managed browser (/api/execute)       */
-/* ------------------------------------------------------------------ */
-
-export type ExecLogEntry =
-  | { id: string; type: "step"; index: number; total: number; label: string; status: "running" | "done" | "skipped" | "failed"; detail?: string }
-  | { id: string; type: "msg"; role: "assistant"; text: string };
-
-export interface ExecRunState {
-  workflowId: string;
-  workflowName: string;
-  status: "running" | "finished" | "failed" | "aborted";
-  startedAt: number;
-  log: ExecLogEntry[];
-}
-
 export function uid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function stepInstruction(step: StepDTO | RecordedStep): string {
-  if (step.kind === "action") return (step.payload as Partial<ActionStepPayload>).label || step.payload.text || "Taught action";
   return step.payload.text || step.payload.note || (step.kind === "snapshot" ? "Visual checkpoint" : "");
 }

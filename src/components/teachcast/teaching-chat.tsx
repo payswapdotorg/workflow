@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bot, Camera, CircleStop, Eraser, Loader2, SendHorizontal, Sparkles, TerminalSquare, Video, Workflow } from "lucide-react";
+import { Bot, Camera, Eraser, Loader2, SendHorizontal, TerminalSquare, Workflow } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,14 +20,9 @@ import { useAppStore } from "@/lib/store";
 import { captureFrame, createToolCollector, imagePart, streamChat, textPart } from "@/lib/screen";
 import { captureSnapshotStep } from "@/lib/session-actions";
 import { sessionWatchdog } from "@/lib/session-watchdog";
-import { EXECUTE_SYSTEM_WITH_TOOLS, TEACH_SYSTEM_WITH_TOOLS } from "@/lib/prompts";
-import { parseTeachCommand, synthesizeSteps } from "@/lib/teach-capture";
-import { teachCapture } from "@/lib/teach-capture-live";
-import { cursorBus } from "@/lib/llm-cursor";
-import { abortExecRun, startExecRun } from "@/lib/exec-client";
+import { TEACH_SYSTEM_WITH_TOOLS } from "@/lib/prompts";
 import { uid, type LLMMessage } from "@/lib/types";
 import { SaveWorkflowDialog } from "./save-workflow-dialog";
-import { DraftReviewDialog } from "./draft-review-dialog";
 import { ToolActivity } from "./tool-activity";
 import { toast } from "sonner";
 
@@ -40,12 +35,6 @@ export function TeachingChat() {
   const pushStep = useAppStore((s) => s.pushSessionStep);
   const setThinking = useAppStore((s) => s.setSessionThinking);
   const resetSession = useAppStore((s) => s.resetSession);
-  /* M7 dual-cursor teaching */
-  const chatMode = useAppStore((s) => s.chatMode);
-  const setChatMode = useAppStore((s) => s.setChatMode);
-  const captureArmed = useAppStore((s) => s.captureArmed);
-  const captureEventCount = useAppStore((s) => s.captureEventCount);
-  const execRun = useAppStore((s) => s.execRun);
 
   const [input, setInput] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
@@ -53,60 +42,11 @@ export function TeachingChat() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, thinking, execRun?.log.length]);
-
-  /** Deterministic lesson protocol (M7): "watch this" arms capture, "learn
-   *  this" folds the recording into a draft workflow. Handled LOCALLY — no
-   *  LLM round-trip — so the protocol is exact and always available. */
-  const handleTeachCommand = (cmd: "watch" | "learn"): boolean => {
-    if (cmd === "watch") {
-      if (!teachCapture.arm()) {
-        pushMessage({ id: uid(), role: "assistant", text: "Nothing to watch yet — the stage is not mounted. Open the studio stage and try again.", ts: Date.now(), error: true });
-        return true;
-      }
-      pushMessage({
-        id: uid(),
-        role: "assistant",
-        text: "Recording. Demonstrate the actions on your shared screen now — every click and keystroke (with a frame of the screen at that instant) is being captured. Say “learn this” when you're done and I'll assemble the lesson into a draft workflow for your review.",
-        ts: Date.now(),
-      });
-      return true;
-    }
-    /* learn */
-    if (!teachCapture.isArmed() && teachCapture.getEvents().length === 0) {
-      pushMessage({ id: uid(), role: "assistant", text: "Nothing is being recorded. Say “watch this” first, then demonstrate.", ts: Date.now() });
-      return true;
-    }
-    const events = teachCapture.disarm();
-    const draft = synthesizeSteps(events);
-    if (draft.length === 0) {
-      pushMessage({ id: uid(), role: "assistant", text: "I watched, but captured no clicks or typing — moves alone don't form steps. Demonstrate a click or some typing and say “learn this” again.", ts: Date.now() });
-      return true;
-    }
-    useAppStore.getState().setDraftSteps(draft);
-    pushMessage({
-      id: uid(),
-      role: "assistant",
-      text: `Lesson captured: ${draft.length} step${draft.length === 1 ? "" : "s"}. Review the draft — coordinates are stored as hints and are re-grounded against a fresh snapshot every time the workflow runs.`,
-      ts: Date.now(),
-    });
-    return true;
-  };
+  }, [messages, thinking]);
 
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
     if (!text || thinking) return;
-
-    /* 0. the deterministic lesson protocol never reaches the LLM */
-    const cmd = parseTeachCommand(text);
-    if (cmd) {
-      const frame = captureFrame();
-      if (!override) setInput("");
-      sessionWatchdog.clearDraft("session");
-      pushMessage({ id: uid(), role: "user", text, image: frame ?? undefined, ts: Date.now() });
-      handleTeachCommand(cmd);
-      return;
-    }
 
     /* 1. capture the live frame at the exact moment of the message */
     const frame = captureFrame();
@@ -132,18 +72,14 @@ export function TeachingChat() {
         content: frame ? [textPart(text), imagePart(frame)] : text,
       });
       await streamChat({
-        /* M7 act mode: the LLM acts on the DEDICATED managed browser while its
-           cursor is watched live on the stage mirror. */
-        system: chatMode === "act" ? EXECUTE_SYSTEM_WITH_TOOLS : TEACH_SYSTEM_WITH_TOOLS,
+        system: TEACH_SYSTEM_WITH_TOOLS,
         messages: history,
         enableTools: true,
-        browserTarget: chatMode === "act" ? "managed" : undefined,
         onActivity: () => sessionWatchdog.activity(),
         onDelta: (d) => useAppStore.getState().patchSessionMessage(asstId, (m) => ({ text: m.text + d })),
         onTool: createToolCollector((toolCalls) =>
           useAppStore.getState().patchSessionMessage(asstId, { toolCalls })
         ),
-        onCursor: (ev) => cursorBus.dispatch(ev),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LLM call failed";
@@ -195,45 +131,9 @@ export function TeachingChat() {
       <div className="flex items-center gap-2 border-b border-zinc-800/80 px-4 py-2.5">
         <Bot className="h-4 w-4 text-amber-400" />
         <span className="text-sm font-semibold text-zinc-100">Teaching chat</span>
-        {/* M7 mode toggle: teach (demonstrate on YOUR screen) / act (LLM acts on the managed browser) */}
-        <div className="flex overflow-hidden rounded-md border border-zinc-700" role="tablist" aria-label="Chat mode">
-          <button
-            role="tab"
-            aria-selected={chatMode === "teach"}
-            onClick={() => setChatMode("teach")}
-            className={`flex h-6 items-center gap-1 px-2 text-[11px] font-medium transition-colors ${
-              chatMode === "teach" ? "bg-amber-500 text-black" : "bg-transparent text-zinc-400 hover:bg-zinc-800"
-            }`}
-            title="Teach: you demonstrate on your shared screen — your cursor, your surface"
-          >
-            <Video className="h-3 w-3" />
-            Teach
-          </button>
-          <button
-            role="tab"
-            aria-selected={chatMode === "act"}
-            onClick={() => setChatMode("act")}
-            className={`flex h-6 items-center gap-1 px-2 text-[11px] font-medium transition-colors ${
-              chatMode === "act" ? "bg-sky-600 text-white" : "bg-transparent text-zinc-400 hover:bg-zinc-800"
-            }`}
-            title="Act: the LLM acts on the managed browser — its amber cursor moves on the stage mirror"
-          >
-            <Sparkles className="h-3 w-3" />
-            Act
-          </button>
-        </div>
-        {captureArmed && (
-          <Badge className="h-5 gap-1 border-red-500/40 bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-300" variant="outline">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-400" />
-            </span>
-            REC · {captureEventCount} event{captureEventCount === 1 ? "" : "s"}
-          </Badge>
-        )}
         <Badge
           variant="outline"
-          className="hidden h-5 gap-1 border-zinc-700 px-1.5 text-[10px] text-zinc-400 lg:inline-flex"
+          className="hidden h-5 gap-1 border-zinc-700 px-1.5 text-[10px] text-zinc-400 sm:inline-flex"
           title="The LLM can act on the computer: read/write files, run shell commands and code, control a browser"
         >
           <TerminalSquare className="h-2.5 w-2.5" />
@@ -242,17 +142,15 @@ export function TeachingChat() {
         <Badge variant="secondary" className="ml-auto h-5 border-zinc-700 bg-zinc-800/70 text-[11px] font-medium text-zinc-300">
           {steps.length} event{steps.length === 1 ? "" : "s"} recorded
         </Badge>
-        {chatMode === "teach" && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 border-zinc-700 px-2 text-xs text-zinc-300 hover:bg-zinc-800"
-            onClick={manualSnapshot}
-          >
-            <Camera className="h-3 w-3" />
-            Snapshot step
-          </Button>
-        )}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 border-zinc-700 px-2 text-xs text-zinc-300 hover:bg-zinc-800"
+          onClick={manualSnapshot}
+        >
+          <Camera className="h-3 w-3" />
+          Snapshot step
+        </Button>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button
@@ -345,8 +243,6 @@ export function TeachingChat() {
             </div>
           )
         )}
-        {/* M7 execution run log — the honest record of what ran on the managed browser */}
-        {execRun && <ExecRunBlock />}
       </div>
 
       {/* composer */}
@@ -369,9 +265,7 @@ export function TeachingChat() {
             placeholder={
               thinking
                 ? "Waiting for the assistant…"
-                : chatMode === "act"
-                  ? "Instruct the LLM — it acts on the managed browser and its cursor moves on the stage. Enter to send."
-                  : "Narrate what you are doing on screen — Enter to send, Shift+Enter for a new line. Say “watch this” to record a lesson."
+                : "Narrate what you are doing on screen — Enter to send, Shift+Enter for a new line"
             }
             rows={2}
             className="max-h-36 min-h-[52px] resize-none border-zinc-800 bg-zinc-900 text-sm text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-amber-500/50"
@@ -405,110 +299,6 @@ export function TeachingChat() {
       </div>
 
       <SaveWorkflowDialog open={saveOpen} onOpenChange={setSaveOpen} />
-      <DraftReviewDialog />
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* M7 execution run block — live, honest log of the managed-browser run */
-/* ------------------------------------------------------------------ */
-
-function ExecRunBlock() {
-  const execRun = useAppStore((s) => s.execRun);
-  if (!execRun) return null;
-  return (
-    <div className="flex justify-start">
-      <div className="w-[92%] rounded-2xl rounded-bl-md border border-sky-500/25 bg-sky-500/5 px-3.5 py-2.5">
-        <div className="mb-1.5 flex items-center gap-2">
-          <Sparkles className="h-3.5 w-3.5 text-sky-400" />
-          <span className="text-xs font-semibold text-sky-200">Execution · managed browser</span>
-          {execRun.status === "running" && (
-            <span className="flex items-center gap-1 text-[10px] text-sky-300/80">
-              <Loader2 className="h-3 w-3 animate-spin" /> running
-            </span>
-          )}
-          {execRun.status !== "running" && (
-            <Badge
-              variant="outline"
-              className={`h-4 px-1 text-[9px] ${
-                execRun.status === "finished"
-                  ? "border-emerald-500/40 text-emerald-300"
-                  : execRun.status === "aborted"
-                    ? "border-zinc-600 text-zinc-400"
-                    : "border-red-500/40 text-red-300"
-              }`}
-            >
-              {execRun.status}
-            </Badge>
-          )}
-          {execRun.status === "running" && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="ml-auto h-6 gap-1 border-red-500/40 px-1.5 text-[10px] text-red-300 hover:bg-red-500/10"
-              onClick={() => abortExecRun()}
-            >
-              <CircleStop className="h-3 w-3" />
-              Stop run
-            </Button>
-          )}
-        </div>
-        <ol className="space-y-1">
-          {execRun.log.map((entry) =>
-            entry.type === "msg" ? (
-              <li key={entry.id} className="text-[12px] leading-relaxed text-zinc-300">
-                {entry.text}
-              </li>
-            ) : (
-              <li key={entry.id} className="flex items-start gap-2 rounded-md px-1.5 py-1">
-                <span
-                  className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-[9px] font-bold ${
-                    entry.status === "done"
-                      ? "bg-emerald-500/20 text-emerald-300"
-                      : entry.status === "failed"
-                        ? "bg-red-500/20 text-red-300"
-                        : entry.status === "skipped"
-                          ? "bg-zinc-700/60 text-zinc-400"
-                          : "bg-sky-500/20 text-sky-300"
-                  }`}
-                >
-                  {entry.index + 1}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[12px] leading-snug text-zinc-200">
-                    {entry.label}
-                    {entry.status === "running" && <Loader2 className="ml-1.5 inline h-3 w-3 animate-spin text-sky-400" />}
-                  </p>
-                  {entry.detail && (
-                    <p
-                      className={`mt-0.5 text-[10px] leading-snug ${
-                        entry.status === "failed" ? "text-red-300/90" : entry.status === "skipped" ? "text-zinc-500" : "text-zinc-500"
-                      }`}
-                    >
-                      {entry.detail}
-                    </p>
-                  )}
-                </div>
-                <Badge
-                  variant="outline"
-                  className={`h-4 shrink-0 px-1 text-[9px] ${
-                    entry.status === "done"
-                      ? "border-emerald-500/40 text-emerald-300"
-                      : entry.status === "failed"
-                        ? "border-red-500/40 text-red-300"
-                        : entry.status === "skipped"
-                          ? "border-zinc-700 text-zinc-500"
-                          : "border-sky-500/40 text-sky-300"
-                  }`}
-                >
-                  {entry.status}
-                </Badge>
-              </li>
-            )
-          )}
-        </ol>
-      </div>
     </div>
   );
 }
