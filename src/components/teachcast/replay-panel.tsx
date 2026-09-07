@@ -124,7 +124,7 @@ export function ReplayPanel() {
             <span>
               {doneish}/{total} steps settled
             </span>
-            {busy && <span className="text-sky-400/90">Running on the managed browser — watch the stage.</span>}
+            {busy && <span className="text-sky-400/90">Running on the managed browser — watch the stage. You can click into the browser to take over (captchas, logins).</span>}
           </div>
         </div>
         {/* controls */}
@@ -164,8 +164,7 @@ export function ReplayPanel() {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <p className="text-sm text-zinc-400">Ready to run “{workflow.name}”</p>
             <p className="max-w-xs text-xs leading-relaxed text-zinc-600">
-              It will execute on the managed browser — the browser appears on the stage and each step settles here as it lands.
-              Connect the managed browser from the console first if it is not already live.
+              It will execute on the managed browser — the browser appears on the stage LIVE and you can drive it yourself: click into it and your mouse and keyboard land on the real page (solve a captcha or log in mid-run). Connect it from the console first if it is not already live.
             </p>
           </div>
         )}

@@ -113,6 +113,8 @@ interface AppState {
   managedFrame: string | null;
   managedUrl: string | null;
   setManagedFrame: (frame: string | null, url?: string | null) => void;
+  /** Live URL of the managed browser, pushed by the CDP live surface. */
+  setManagedUrl: (url: string | null) => void;
 }
 
 function createAppStore() {
@@ -224,6 +226,7 @@ function createAppStore() {
     managedUrl: null,
     setManagedFrame: (managedFrame, managedUrl) =>
       set((s) => ({ managedFrame, managedUrl: managedUrl === undefined ? s.managedUrl : managedUrl })),
+    setManagedUrl: (url) => set({ managedUrl: url }),
   }));
 }
 

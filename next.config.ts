@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  /* The CDP bridge's `ws` fallback must stay a REAL external module — a
+     bundled copy mis-negotiates the 101 upgrade under Bun's standalone
+     server. The native WebSocket (Bun / Node 22+) is the primary path. */
+  serverExternalPackages: ["ws"],
   /* Hermetic e2e (e2e/run-all.mjs) overrides the build directory so its dev
      server never contends for .next/dev/lock with a live operator instance
      of the same worktree (the :3005 preview). Everything else — build,

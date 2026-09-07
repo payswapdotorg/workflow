@@ -14,6 +14,7 @@ import {
 import { cursorBus } from "@/lib/llm-cursor";
 import { teachCapture } from "@/lib/teach-capture-live";
 import { LlmCursorOverlay } from "./llm-cursor-overlay";
+import { LiveBrowserSurface } from "./live-browser-surface";
 import { toast } from "sonner";
 
 const emptySubscribe = () => () => {};
@@ -43,6 +44,10 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
   const managedFrame = useAppStore((s) => s.managedFrame);
   const managedUrl = useAppStore((s) => s.managedUrl);
   const setManagedFrame = useAppStore((s) => s.setManagedFrame);
+  const setManagedUrl = useAppStore((s) => s.setManagedUrl);
+  /* live = the SSE screencast owns the mirror; !live = snapshot-poll fallback */
+  const [liveOk, setLiveOk] = useState(false);
+  const handleLiveChange = useCallback((live: boolean) => setLiveOk(live), []);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -65,12 +70,13 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
     return () => teachCapture.registerSurface(null);
   }, []);
 
-  /* browser-surface mirror: fetch a REAL screenshot of the managed browser on
-     entry, after every cursor activity (debounced), and on a slow poll — so the
-     mirror always shows the surface being driven (act mode: the LLM cursor;
-     replay mode: the workflow run). */
+  /* browser-surface mirror FALLBACK: the CDP live stream (SSE screencast)
+     owns the stage while frames flow; when it does not (managed browser
+     absent, proxy buffering, relaunch in flight) this heavier snapshot poll
+     keeps a static mirror alive — on entry, after cursor activity (debounced)
+     and on a slow poll. */
   useEffect(() => {
-    if (!browserSurface) return;
+    if (!browserSurface || liveOk) return;
     let alive = true;
     let lastAt = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -105,7 +111,7 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
       clearInterval(poll);
       if (timer) clearTimeout(timer);
     };
-  }, [browserSurface, setManagedFrame]);
+  }, [browserSurface, setManagedFrame, liveOk]);
 
   /* register the active video so captureFrame() reads this element.
      Re-runs on `stream` changes because the <video> is conditionally rendered. */
@@ -229,30 +235,15 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
     >
       {browserSurface ? (
         <>
-          {managedFrame ? (
-            <img
-              ref={mirrorRef}
-              src={managedFrame}
-              alt="Managed browser — a real screenshot of the browser the workflow runs on"
-              className="h-full w-full object-contain"
-            />
-          ) : (
-            <div className="flex max-w-md flex-col items-center gap-4 p-8 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900">
-                <Globe className="h-8 w-8 text-sky-400" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-zinc-100">
-                  {mode === "replay" ? "Replay surface: managed browser" : "Acting surface: managed browser"}
-                </h2>
-                <p className="mt-1.5 text-sm leading-relaxed text-zinc-400">
-                  {mode === "replay"
-                    ? "The workflow runs on the dedicated managed browser and this stage shows that browser live — the amber cursor marks each action as it lands. Connect the managed session from the console panel to bring it up."
-                    : "The LLM acts on the dedicated managed browser — its amber cursor will move here. Connect the managed session from the console panel to bring the mirror live."}
-                </p>
-              </div>
-            </div>
-          )}
+          {/* the live, OPERABLE managed browser — CDP screencast downstream,
+              operator mouse/keyboard upstream (operator directive 2026-09-07) */}
+          <LiveBrowserSurface
+            mode={mode}
+            imgRef={mirrorRef}
+            fallbackFrame={managedFrame}
+            onLiveChange={handleLiveChange}
+            onUrl={setManagedUrl}
+          />
           {/* honest surface label: the run happens here, not on the operator's screen */}
           <div className="absolute left-3 top-3 flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-600/90 px-2.5 py-1 text-xs font-semibold text-white shadow-lg">
