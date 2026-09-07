@@ -20,12 +20,12 @@ model Workflow {
   steps       Step[]
 }
 
-// Step {kind: message|snapshot, payload, ts}
+// Step {kind: message|snapshot|action, payload, ts}
 model Step {
   id         String   @id @default(cuid())
   workflowId String
-  kind       String // "message" | "snapshot"
-  payload    String // JSON string: { text?, image?, note? }
+  kind       String // "message" | "snapshot" | "action" (M7 taught click/type)
+  payload    String // JSON string: { text?, image?, note? } | { actionType, x?, y?, text?, label, thumb? }
   ts         DateTime
   order      Int
   workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)

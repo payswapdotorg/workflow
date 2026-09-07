@@ -13,17 +13,57 @@ interface IncomingStep {
   ts?: unknown;
 }
 
+const MAX_THUMB_CHARS = 400_000; // a click frame thumbnail is a small JPEG
+
+/** M7: action steps carry taught clicks/keystrokes with capture-space context.
+ *  Coordinates are normalized 0..1 HINTS — the executor re-resolves them
+ *  against a fresh snapshot; validation only enforces shape and range. */
+function validActionPayload(payload: Record<string, unknown>): string | null {
+  const actionType = payload.actionType;
+  if (actionType !== "click" && actionType !== "type") {
+    return 'action steps need payload.actionType "click" or "type"';
+  }
+  if (typeof payload.label !== "string" || !payload.label.trim() || payload.label.length > 300) {
+    return "action steps need a label (1..300 chars)";
+  }
+  if (actionType === "click") {
+    const x = payload.x;
+    const y = payload.y;
+    if (typeof x !== "number" || !Number.isFinite(x) || x < 0 || x > 1) {
+      return "click steps need numeric x in 0..1 (normalized capture coords)";
+    }
+    if (typeof y !== "number" || !Number.isFinite(y) || y < 0 || y > 1) {
+      return "click steps need numeric y in 0..1 (normalized capture coords)";
+    }
+  }
+  if (actionType === "type") {
+    const text = payload.text;
+    if (typeof text !== "string" || text.length === 0 || text.length > 4000) {
+      return "type steps need text (1..4000 chars)";
+    }
+  }
+  const thumb = payload.thumb;
+  if (thumb !== undefined && thumb !== null && (typeof thumb !== "string" || thumb.length > MAX_THUMB_CHARS)) {
+    return `thumb must be a data URL under ${MAX_THUMB_CHARS} chars`;
+  }
+  return null;
+}
+
 function validateSteps(steps: unknown): { ok: true; steps: IncomingStep[] } | { ok: false; error: string } {
   if (!Array.isArray(steps) || steps.length === 0) {
     return { ok: false, error: "steps must be a non-empty array" };
   }
   if (steps.length > 80) return { ok: false, error: "A workflow can hold at most 80 steps" };
   for (const s of steps as IncomingStep[]) {
-    if (!s || (s.kind !== "message" && s.kind !== "snapshot")) {
-      return { ok: false, error: 'Each step needs kind "message" or "snapshot"' };
+    if (!s || (s.kind !== "message" && s.kind !== "snapshot" && s.kind !== "action")) {
+      return { ok: false, error: 'Each step needs kind "message", "snapshot" or "action"' };
     }
     if (typeof s.payload !== "object" || s.payload === null) {
       return { ok: false, error: "Each step needs a payload object" };
+    }
+    if (s.kind === "action") {
+      const err = validActionPayload(s.payload as Record<string, unknown>);
+      if (err) return { ok: false, error: err };
     }
     if (JSON.stringify(s.payload).length > MAX_PAYLOAD_CHARS) {
       return { ok: false, error: "Step payload too large" };

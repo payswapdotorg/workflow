@@ -136,11 +136,13 @@ const browserTool = createBrowserTool({ runCli: realCliRunner, workspaceRoot: WO
  *  opts.browserSession scopes browser_control to a concrete agent-browser
  *  profile (default: the workflow/agent session "teachcast-agent"; the
  *  operator console passes MANAGED_BROWSER_SESSION so it supervises its own
- *  dedicated browser). File/shell/code tools are workspace-rooted regardless. */
+ *  dedicated browser). File/shell/code tools are workspace-rooted regardless.
+ *  opts.onCursor (optional) receives UI-only LLM-cursor events from
+ *  browser_control so the stage overlay can animate the second cursor (M7). */
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
-  opts?: { browserSession?: string }
+  opts?: { browserSession?: string; onCursor?: (ev: import("./browser-tool").CursorEvent) => void }
 ): Promise<string> {
   const browserSession = opts?.browserSession ?? BROWSER_SESSION;
   if (!isKnownTool(name)) throw new Error(`Unknown tool "${name}".`);
@@ -154,6 +156,6 @@ export async function executeTool(
     case "run_code":
       return runCode(args);
     case "browser_control":
-      return browserTool.handle(args, browserSession);
+      return browserTool.handle(args, browserSession, { onCursor: opts?.onCursor });
   }
 }
