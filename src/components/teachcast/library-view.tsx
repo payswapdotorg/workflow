@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppWindow,
   CheckCircle2,
@@ -43,25 +43,67 @@ export function LibraryView() {
   const setView = useAppStore((s) => s.setView);
   const setReplayWorkflow = useAppStore((s) => s.setReplayWorkflow);
   const view = useAppStore((s) => s.view);
+  const libraryVersion = useAppStore((s) => s.libraryVersion);
 
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [launchingId, setLaunchingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkflowSummaryDTO | null>(null);
+  /** Throttle anchor for focus/visibility/poll revalidation (updated on every fetch). */
+  const lastRefreshTs = useRef(0);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/workflows", { cache: "no-store" });
-      if (res.ok) setWorkflows(await res.json());
-    } finally {
-      setLoading(false);
-    }
-  }, [setWorkflows]);
+  const refresh = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      lastRefreshTs.current = Date.now();
+      /* silent refreshes update the list in place — no full-grid spinner */
+      if (!opts?.silent) setLoading(true);
+      try {
+        const res = await fetch("/api/workflows", { cache: "no-store" });
+        if (res.ok) setWorkflows(await res.json());
+      } finally {
+        if (!opts?.silent) setLoading(false);
+      }
+    },
+    [setWorkflows]
+  );
 
   /* refetch whenever the Library becomes the active view (views stay mounted) */
   useEffect(() => {
     if (view === "library") refresh();
+  }, [view, refresh]);
+
+  /* workflow mutations anywhere (save / install / delete / autoLaunch /
+     replay markRun) and Library re-entry clicks bump libraryVersion —
+     refetch in the background so an already-open Library can never go
+     stale. Bumps only fire while the Library is already active (the
+     app-header re-entry handler), so this never double-fetches on entry. */
+  useEffect(() => {
+    if (view === "library" && libraryVersion > 0) refresh({ silent: true });
+  }, [libraryVersion, view, refresh]);
+
+  /* workflows can also change OUTSIDE this tab (API, another window, an
+     LLM tool call). While the Library is active: revalidate on window
+     focus and on becoming visible (throttled), plus a gentle 10s poll —
+     one cheap GET, only while the list is on screen. */
+  useEffect(() => {
+    if (view !== "library") return;
+    const throttled = (minMs: number) => Date.now() - lastRefreshTs.current >= minMs;
+    const onFocus = () => {
+      if (throttled(3_000)) refresh({ silent: true });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && throttled(3_000)) refresh({ silent: true });
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const poll = setInterval(() => {
+      if (throttled(10_000)) refresh({ silent: true });
+    }, 10_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearInterval(poll);
+    };
   }, [view, refresh]);
 
   const install = async (wf: WorkflowSummaryDTO) => {
@@ -74,6 +116,7 @@ export function LibraryView() {
       });
       if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
       setWorkflows(workflows.map((w) => (w.id === wf.id ? { ...w, installed: true } : w)));
+      useAppStore.getState().bumpLibraryVersion(); /* reconcile with server truth */
       toast.success(`“${wf.name}” installed`, { description: "It is now a launchable app in your Library." });
     } catch (err) {
       toast.error("Install failed", { description: err instanceof Error ? err.message : "Unknown error" });
@@ -116,6 +159,7 @@ export function LibraryView() {
               : w
         )
       );
+      useAppStore.getState().bumpLibraryVersion(); /* reconcile with server truth */
       if (updated.autoLaunch) {
         toast.success(`TeachCast opens with “${wf.name}”`, {
           description: "Launch-on-start is set — the app opens straight into this workflow.",
@@ -138,6 +182,7 @@ export function LibraryView() {
       const res = await fetch(`/api/workflows/${wf.id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setWorkflows(workflows.filter((w) => w.id !== wf.id));
+      useAppStore.getState().bumpLibraryVersion(); /* reconcile with server truth */
       toast.info(`“${wf.name}” deleted`);
     } catch (err) {
       toast.error("Delete failed", { description: err instanceof Error ? err.message : "Unknown error" });

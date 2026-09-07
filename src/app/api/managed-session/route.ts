@@ -3,6 +3,7 @@ import { execFile } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
 import { MANAGED_BROWSER_SESSION } from "@/lib/tools";
+import { withRouteTimeout } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,12 +89,12 @@ async function captureFrame(): Promise<string | null> {
   }
 }
 
-export async function GET() {
+async function GET_impl() {
   const state = await liveState();
   return NextResponse.json({ ...state, error: state.active ? null : "managed browser not running" });
 }
 
-export async function POST(req: NextRequest) {
+async function POST_impl(req: NextRequest) {
   let body: { action?: unknown; url?: unknown };
   try {
     body = await req.json();
@@ -146,3 +147,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'action must be "open" | "snapshot" | "close"' }, { status: 400 });
   }
 }
+
+/* The agent-browser CLI calls inside carry their own per-call timeouts (30-45s);
+   the guard is the outer net so a wedged spawn can never hang the operator. */
+export const GET = withRouteTimeout(GET_impl, { timeoutMs: 60_000, label: "managed-session.state" });
+export const POST = withRouteTimeout(POST_impl, { timeoutMs: 60_000, label: "managed-session.action" });

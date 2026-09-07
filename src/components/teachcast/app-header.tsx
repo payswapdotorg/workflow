@@ -26,6 +26,7 @@ const getEmbeddedServer = () => false;
 export function AppHeader() {
   const view = useAppStore((s) => s.view);
   const setView = useAppStore((s) => s.setView);
+  const bumpLibraryVersion = useAppStore((s) => s.bumpLibraryVersion);
   const settings = useAppStore((s) => s.settings);
   const replayWorkflow = useAppStore((s) => s.replayWorkflow);
   const consoleOpen = useAppStore((s) => s.consoleOpen);
@@ -60,7 +61,13 @@ export function AppHeader() {
             className={`h-8 gap-1.5 px-2.5 text-xs ${
               view === v ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
             }`}
-            onClick={() => setView(v)}
+            onClick={() => {
+              /* Re-entry: clicking Library while it is ALREADY active must
+                 still refetch — views stay mounted, so no view change fires.
+                 The version bump triggers LibraryView's background refresh. */
+              if (v === "library" && view === "library") bumpLibraryVersion();
+              setView(v);
+            }}
             aria-current={view === v ? "page" : undefined}
           >
             <Icon className="h-3.5 w-3.5" />

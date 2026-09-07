@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -60,7 +61,6 @@ worklog.md
 examples/
 mini-services/
 scripts/
-tests/
 .zscripts
 .caddy
 Caddyfile
@@ -70,3 +70,10 @@ server.log
 
 # agent toolset runtime workspace
 workspace/
+
+# e2e runtime artifacts (the suites themselves ARE tracked)
+e2e/*-transcript.md
+e2e/.server.log
+
+# hermetic e2e build directory (throwaway, managed by e2e/run-all.mjs)
+.next-e2e/
