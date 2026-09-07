@@ -13,7 +13,12 @@ function markRun(workflowId: string) {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ markRun: true }),
-  }).catch(() => {});
+  })
+    .then(() => {
+      /* lastRunAt changed server-side — the Library list must refetch even if it is open */
+      useAppStore.getState().bumpLibraryVersion();
+    })
+    .catch(() => {});
 }
 
 /**

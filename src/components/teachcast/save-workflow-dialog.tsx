@@ -102,6 +102,7 @@ export function SaveWorkflowDialog({ open, onOpenChange }: SaveWorkflowDialogPro
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || `Saving failed (HTTP ${res.status})`);
+      useAppStore.getState().bumpLibraryVersion(); /* the list changed — Library refetches even if already open */
       toast.success("Workflow saved to your Library", {
         description: `${data.steps?.length ?? finalSteps.length} steps · install it there to make it launchable`,
       });

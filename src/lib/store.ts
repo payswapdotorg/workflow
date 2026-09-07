@@ -57,6 +57,13 @@ interface AppState {
   /* library */
   workflows: WorkflowSummaryDTO[];
   setWorkflows: (w: WorkflowSummaryDTO[]) => void;
+  /** Bumped on every workflow mutation from anywhere in the app (save,
+   *  install, delete, launch-on-start, replay markRun) and on Library
+   *  re-entry (nav click while Library is already active). LibraryView
+   *  refetches whenever it changes, so the list can never go stale — even
+   *  when the Library is already the active view. */
+  libraryVersion: number;
+  bumpLibraryVersion: () => void;
 
   /* replay */
   replayWorkflow: WorkflowDTO | null;
@@ -133,6 +140,8 @@ function createAppStore() {
     /* ---------------- library ---------------- */
     workflows: [],
     setWorkflows: (workflows) => set({ workflows }),
+    libraryVersion: 0,
+    bumpLibraryVersion: () => set((s) => ({ libraryVersion: s.libraryVersion + 1 })),
 
     /* ---------------- replay ----------------- */
     replayWorkflow: null,
