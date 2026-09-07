@@ -14,6 +14,8 @@
  *   1. e2e/api-timeout.mjs      (route guard + health endpoint)
  *   2. e2e/library-staleness.mjs (M6 fix 1, real browser)
  *   3. e2e/computer-use.mjs      (M5 acceptance: real LLM tool loop + refs)
+ *   4. e2e/dual-cursor.mjs       (M7 acceptance: cursor wire protocol, taught
+ *      action steps, managed-browser execution with vision re-resolution)
  *
  * Prerequisites: agent-browser on PATH (suites 2-3), network access (suite 3
  * drives example.com/iana.org through the real LLM).
@@ -36,6 +38,7 @@ const suites = [
   "e2e/api-timeout.mjs",
   "e2e/library-staleness.mjs",
   "e2e/computer-use.mjs",
+  "e2e/dual-cursor.mjs",
 ];
 
 const log = (s = "") => console.log(s);
@@ -131,8 +134,10 @@ async function main() {
     failures.push(`runner: ${e?.message ?? e}`);
   } finally {
     /* 5. teardown: suites close their own browser sessions; free the agent
-       session the computer-use suite drives, then the server, then the db */
+       session the computer-use suite drives and the managed session the
+       dual-cursor suite drives, then the server, then the db */
     await closeSession("teachcast-agent");
+    await closeSession("teachcast-managed");
     if (server?.pid) {
       try {
         process.kill(-server.pid, "SIGTERM"); /* negative pid = whole group */

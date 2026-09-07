@@ -140,3 +140,20 @@
   scrollbar-width: thin;
   scrollbar-color: oklch(0.32 0 0) transparent;
 }
+
+/* M7 dual-cursor: LLM cursor click ripple */
+.llm-cursor-ripple {
+  animation: llm-cursor-ripple 620ms ease-out forwards;
+}
+@keyframes llm-cursor-ripple {
+  0% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(0.3);
+    border-color: #fbbf24;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.9);
+    border-color: rgba(245, 158, 11, 0.2);
+  }
+}

@@ -207,7 +207,12 @@ async function execAndEmit(
   }
   emit({ tool: { id, name, args, status: "running" } });
   try {
-    const output = await executeTool(name, args, { browserSession });
+    const output = await executeTool(name, args, {
+      browserSession,
+      /* M7: browser_control resolves real element geometry and emits UI-only
+         LLM-cursor events — streamed to the client, never fed to the model. */
+      onCursor: (ev) => emit({ cursor: ev }),
+    });
     emit({ tool_result: { id, name, ok: true, output, status: "done" } });
     return output;
   } catch (err) {

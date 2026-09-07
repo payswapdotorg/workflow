@@ -79,6 +79,39 @@ export interface BrowserToolDeps {
 }
 
 /* ------------------------------------------------------------------ */
+/* Cursor events (M7 dual-cursor)                                      */
+/* ------------------------------------------------------------------ */
+
+/** UI-only cursor instruction emitted when a REAL action is about to run so
+ *  the stage overlay can animate the LLM cursor. Coordinates are NORMALIZED
+ *  (0..1) to the browser viewport, derived from agent-browser `get box @ref`
+ *  geometry — never guessed. Cursor resolution is BEST-EFFORT: it can never
+ *  delay, fail or alter the action itself. */
+export interface CursorEvent {
+  type: "move" | "click" | "typing" | "type_done" | "hide";
+  x?: number;
+  y?: number;
+  durationMs?: number;
+  text?: string;
+}
+
+export interface CursorHooks {
+  onCursor?: (ev: CursorEvent) => void;
+}
+
+const CURSOR_MOVE_MS = 550;
+/** Viewport size cache per session (eval costs a CLI round-trip). */
+const VIEWPORT_TTL_MS = 10_000;
+
+function emitSafe(hooks: CursorHooks | undefined, ev: CursorEvent): void {
+  try {
+    hooks?.onCursor?.(ev);
+  } catch {
+    /* a broken UI sink must never affect the action */
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Argument + ref validation                                           */
 /* ------------------------------------------------------------------ */
 
@@ -216,6 +249,57 @@ export function createBrowserTool(deps: BrowserToolDeps) {
 
   /** Last-known ref set per session (from our most recent snapshot). */
   const refLedger = new Map<string, Set<string>>();
+  /** Cached viewport size per session for cursor normalization. */
+  const viewportCache = new Map<string, { w: number; h: number; at: number }>();
+
+  /** Real viewport size (CSS px) via eval; cached briefly. null when unknown —
+   *  cursor emission simply skips, the action itself never depends on this. */
+  async function resolveViewport(session: string): Promise<{ w: number; h: number } | null> {
+    const hit = viewportCache.get(session);
+    if (hit && Date.now() - hit.at < VIEWPORT_TTL_MS) return { w: hit.w, h: hit.h };
+    try {
+      const r = await call(session, `eval ${q("JSON.stringify({w:window.innerWidth,h:window.innerHeight})")}`, { timeoutMs: 10_000, json: false });
+      if (!r.ok) return null;
+      // the CLI prints the eval result; it may arrive as a JSON-quoted string
+      let text = r.text.trim();
+      if (text.startsWith("\"") && text.endsWith("\"")) text = JSON.parse(text) as string;
+      /* eval returns the RAW JSON object (not the CLI {success,data} envelope) */
+      const obj = JSON.parse(text) as Record<string, unknown>;
+      const w = typeof obj.w === "number" ? obj.w : null;
+      const h = typeof obj.h === "number" ? obj.h : null;
+      if (!w || !h || w <= 0 || h <= 0) return null;
+      viewportCache.set(session, { w, h, at: Date.now() });
+      return { w, h };
+    } catch {
+      return null;
+    }
+  }
+
+  /** REAL viewport-space center of an element, from the CLI's `get box`.
+   *  Best-effort geometry probe for the cursor overlay. */
+  async function resolveBoxCenter(session: string, ref: string): Promise<{ x: number; y: number } | null> {
+    try {
+      const r = await call(session, `get box ${q(ref)}`, { timeoutMs: 10_000 });
+      if (!r.ok || !r.data) return null;
+      const bx = typeof r.data.x === "number" ? r.data.x : null;
+      const by = typeof r.data.y === "number" ? r.data.y : null;
+      const bw = typeof r.data.width === "number" ? r.data.width : 0;
+      const bh = typeof r.data.height === "number" ? r.data.height : 0;
+      if (bx === null || by === null) return null;
+      return { x: bx + bw / 2, y: by + bh / 2 };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Move the overlay cursor to an element's real center, normalized to the
+   *  viewport. All failures are swallowed — the cursor is presentation. */
+  async function cursorMoveToRef(session: string, hooks: CursorHooks | undefined, ref: string): Promise<void> {
+    if (!hooks?.onCursor) return;
+    const [center, viewport] = await Promise.all([resolveBoxCenter(session, ref), resolveViewport(session)]);
+    if (!center || !viewport) return;
+    emitSafe(hooks, { type: "move", x: center.x / viewport.w, y: center.y / viewport.h, durationMs: CURSOR_MOVE_MS });
+  }
 
   function ledgerFor(session: string): Set<string> {
     let s = refLedger.get(session);
@@ -351,13 +435,21 @@ export function createBrowserTool(deps: BrowserToolDeps) {
     );
   }
 
-  /** ref-targeted interaction (click/fill/type/select/hover/scroll_into_view). */
-  async function refAction(session: string, action: string, args: Record<string, unknown>, build: (ref: string) => string, timeoutMs = 20_000): Promise<string> {
+  /** ref-targeted interaction (click/fill/type/select/hover/scroll_into_view).
+   *  With cursor hooks: the overlay cursor glides to the element's REAL center
+   *  before the action and signals the modality after it. */
+  async function refAction(session: string, action: string, args: Record<string, unknown>, build: (ref: string) => string, timeoutMs = 20_000, hooks?: CursorHooks): Promise<string> {
     const ref = normalizeRef(args.ref);
     if (!ref) {
       throw new BrowserActionError("INVALID_ARGS", `browser_control ${action} requires a ref from the latest snapshot (e.g. "@e5"); got "${str(args, "ref")}".`, remedyFor("UNKNOWN_REF"));
     }
+    await cursorMoveToRef(session, hooks, ref);
+    if (hooks?.onCursor && (action === "fill" || action === "type")) emitSafe(hooks, { type: "typing" });
     const recovered = await withRefRecovery(session, action, ref, async () => call(session, build(ref), { timeoutMs }));
+    if (hooks?.onCursor) {
+      if (action === "click") emitSafe(hooks, { type: "click" });
+      if (action === "fill" || action === "type") emitSafe(hooks, { type: "type_done" });
+    }
     return `${recovered}${actionLabel(action, ref)}\n${STALE_HINT}`;
   }
 
@@ -375,7 +467,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
 
   /* ---------------- actions ---------------- */
 
-  async function browserAction(args: Record<string, unknown>, session: string): Promise<string> {
+  async function browserAction(args: Record<string, unknown>, session: string, hooks?: CursorHooks): Promise<string> {
     const action = str(args, "action").toLowerCase();
     switch (action) {
       case "navigate": {
@@ -389,6 +481,8 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         const w = await call(session, "wait --load domcontentloaded --timeout 15000", { timeoutMs: 20_000 });
         if (!w.ok) throw failFrom(session, "navigate/wait", w); // failed postcondition is never a silent ok
         ledgerFor(session).clear(); // any navigation invalidates every ref
+        /* the page the cursor pointed at is gone — hide the overlay cursor */
+        emitSafe(hooks, { type: "hide" });
         return `Navigated to ${url}.\n${STALE_HINT}`;
       }
 
@@ -396,7 +490,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         return doSnapshot(session, args);
 
       case "click":
-        return refAction(session, "click", args, (ref) => `click ${q(ref)}`);
+        return refAction(session, "click", args, (ref) => `click ${q(ref)}`, 20_000, hooks);
 
       case "click_coords": {
         const x = Number(args.x);
@@ -404,12 +498,18 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x > 100_000 || y > 100_000) {
           throw new BrowserActionError("INVALID_ARGS", "browser_control click_coords requires integer viewport coordinates x and y.", remedyFor("INVALID_ARGS"));
         }
+        /* the cursor follows the REAL coordinates being clicked, normalized */
+        if (hooks?.onCursor) {
+          const viewport = await resolveViewport(session);
+          if (viewport) emitSafe(hooks, { type: "move", x: x / viewport.w, y: y / viewport.h, durationMs: CURSOR_MOVE_MS });
+        }
         const a = await call(session, `mouse move ${x} ${y}`, { timeoutMs: 10_000 });
         if (!a.ok) throw failFrom(session, "click_coords", a);
         const b = await call(session, "mouse down", { timeoutMs: 10_000 });
         if (!b.ok) throw failFrom(session, "click_coords", b);
         const c = await call(session, "mouse up", { timeoutMs: 10_000 });
         if (!c.ok) throw failFrom(session, "click_coords", c);
+        emitSafe(hooks, { type: "click" });
         return `Clicked at (${x}, ${y}) via mouse move/down/up. Blind coordinate clicks are a last resort — prefer refs.\n${STALE_HINT}`;
       }
 
@@ -427,6 +527,10 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         // fill = clear + fill; on failure: ONE fallback — focus + keyboard inserttext
         let recovered = "";
         let fillError: unknown = null;
+        if (hooks?.onCursor) {
+          await cursorMoveToRef(session, hooks, ref);
+          emitSafe(hooks, { type: "typing" });
+        }
         try {
           recovered = await withRefRecovery(session, "fill", ref, async () => call(session, `fill ${q(ref)} ${q(text)}`, { timeoutMs: 20_000 }));
         } catch (e) {
@@ -434,6 +538,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         }
         if (fillError === null) {
           // the fill itself succeeded (plain or after stale recovery) — done, no fallback rung
+          emitSafe(hooks, { type: "type_done" });
           return `${recovered}Filled ${ref}.\n${STALE_HINT}`;
         }
         // component rejected the fill (non-stale failure): bounded inserttext fallback
@@ -448,12 +553,13 @@ export function createBrowserTool(deps: BrowserToolDeps) {
           if (fillError instanceof BrowserActionError) throw fillError;
           throw failFrom(session, "fill/inserttext", i);
         }
+        emitSafe(hooks, { type: "type_done" });
         return `[recovered: fill was rejected; focused ${ref} and inserted the text]\nFilled ${ref} via focus + keyboard inserttext.\n${STALE_HINT}`;
       }
 
       case "type": {
         rejectNonStringFields("type", args, ["text"]);
-        return refAction(session, "type", args, (ref) => `type ${q(ref)} ${q(str(args, "text"))}`);
+        return refAction(session, "type", args, (ref) => `type ${q(ref)} ${q(str(args, "text"))}`, 20_000, hooks);
       }
 
       case "press": {
@@ -469,11 +575,11 @@ export function createBrowserTool(deps: BrowserToolDeps) {
       case "select": {
         const value = str(args, "value");
         if (!value) throw new BrowserActionError("INVALID_ARGS", "browser_control select requires value (the option value to select).", remedyFor("INVALID_ARGS"));
-        return refAction(session, "select", args, (ref) => `select ${q(ref)} ${q(value)}`);
+        return refAction(session, "select", args, (ref) => `select ${q(ref)} ${q(value)}`, 20_000, hooks);
       }
 
       case "hover":
-        return refAction(session, "hover", args, (ref) => `hover ${q(ref)}`);
+        return refAction(session, "hover", args, (ref) => `hover ${q(ref)}`, 20_000, hooks);
 
       case "scroll": {
         const dir = (str(args, "direction") || "down").toLowerCase();
@@ -490,7 +596,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
       }
 
       case "scroll_into_view":
-        return refAction(session, "scroll_into_view", args, (ref) => `scrollintoview ${q(ref)}`);
+        return refAction(session, "scroll_into_view", args, (ref) => `scrollintoview ${q(ref)}`, 20_000, hooks);
 
       case "wait": {
         rejectNonStringFields("wait", args, ["text", "url", "element"]);
@@ -604,13 +710,15 @@ export function createBrowserTool(deps: BrowserToolDeps) {
   }
 
   /** Entry point used by executeTool. Never throws raw CLI text: every failure
-   *  is a BrowserActionError whose message is one compact JSON error line. */
-  async function handle(args: Record<string, unknown>, session: string): Promise<string> {
+   *  is a BrowserActionError whose message is one compact JSON error line.
+   *  hooks.onCursor (optional) receives UI-only cursor events for the stage
+   *  overlay — best-effort, never thrown, never blocking the action. */
+  async function handle(args: Record<string, unknown>, session: string, hooks?: CursorHooks): Promise<string> {
     if (!args || typeof args !== "object" || !str(args, "action").trim()) {
       throw new BrowserActionError("INVALID_ARGS", "browser_control requires an action.", "Set action to one of: navigate, snapshot, click, click_coords, fill, type, press, select, hover, scroll, scroll_into_view, wait, read, verify, screenshot, dialog.");
     }
     try {
-      return await browserAction(args, session);
+      return await browserAction(args, session, hooks);
     } catch (err) {
       if (err instanceof BrowserActionError) throw err;
       const message = err instanceof Error ? err.message : String(err);

@@ -1,4 +1,6 @@
+import { parseCursorEvent } from "./llm-cursor";
 import type { LLMMessage, LLMMessagePart, ToolEvent } from "./types";
+import type { ServerCursorEvent } from "./llm-cursor";
 
 /* ------------------------------------------------------------------ */
 /* Live frame capture                                                  */
@@ -51,6 +53,9 @@ export async function streamChat(opts: {
   messages: LLMMessage[];
   onDelta: (delta: string) => void;
   onTool?: (event: ToolEvent) => void;
+  /** M7: UI-only LLM-cursor events ({cursor: ...} SSE) that animate the second
+   *  cursor over the stage. Never part of the model conversation. */
+  onCursor?: (event: ServerCursorEvent) => void;
   /** Fired on every sign of REAL progress (deltas, tool events, response headers).
    *  Deliberately NOT fired by keepalive comments — the UI-level hang watchdog in
    *  session-watchdog.ts must only see genuine movement, not liveness pings. */
@@ -151,6 +156,12 @@ export async function streamChat(opts: {
           if (json?.tool_result && opts.onTool) {
             opts.onActivity?.();
             opts.onTool(json.tool_result as ToolEvent);
+            continue;
+          }
+          if (json?.cursor && opts.onCursor) {
+            opts.onActivity?.();
+            const ev = parseCursorEvent(json.cursor);
+            if (ev) opts.onCursor(ev);
             continue;
           }
           const delta: unknown = json?.choices?.[0]?.delta?.content;
