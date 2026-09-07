@@ -52,9 +52,23 @@ TeachCast's LLM mirrors the chat.z.ai agent toolset and can act on the computer,
 | `write_file` | create / overwrite / append a workspace file |
 | `run_shell` | run a bash command (workspace cwd, 30s default timeout) |
 | `run_code` | execute Python or Node.js scripts |
-| `browser_control` | drive a real Chromium: open, snapshot, click, type, url, close |
+| `browser_control` | drive a real Chromium by refs from live snapshots: `navigate, snapshot, click, click_coords, fill, type, press, select, hover, scroll, scroll_into_view, wait, read, verify, screenshot, dialog` |
 
 Tools are enabled in teaching chat, replay narration, and replay chat. Custom OpenAI-compatible providers use native function calling; providers without function-call support automatically fall back to a JSON tool protocol. Tool executions stream into the UI as live activity rows with expandable output. All file/code tools are rooted at the auto-created `workspace/` directory; path traversal outside it is blocked.
+
+### browser_control failure codes
+
+Every `browser_control` failure returns one compact JSON line `{code, message, remedy}` — a failed action is never reported as success, and CLI exit codes propagate:
+
+| Code | Meaning | Remedy returned to the model |
+|------|---------|------------------------------|
+| `UNKNOWN_REF` | the ref was never in any snapshot (refs are never guessable) | run `snapshot` first and act on a ref it printed |
+| `STALE_REF` | the ref died with the last page change; the tool re-snapshotted and retried once, then reports with the fresh snapshot embedded | re-snapshot and pick the current ref for the same element |
+| `CLICK_COVERED` | another element intercepts the pointer | close overlays, `scroll_into_view`, or `click_coords` as a last resort |
+| `TIMEOUT` | the wait condition never became true within the budget | check the condition or verify the page state |
+| `BROWSER_UNAVAILABLE` | transient host/daemon failure (spawn `EAGAIN`/`ENOBUFS`/`ENFILE`, "Error executing binary", dead daemon "Not attached to an active page") persisted after one ~2s backoff retry | the browser session is unavailable; re-navigate before the next ref action |
+| `CLI_ERROR` | the browser command itself failed | read the message; re-snapshot if the page may have changed |
+| `INVALID_ARGS` | arguments failed validation (unknown action, or wrong type — e.g. a boolean where a string is required) | fix the arguments to match the action's schema |
 
 ## Long-running sessions (M3)
 

@@ -53,7 +53,8 @@ export type BrowserErrorCode =
   | "CLICK_COVERED"
   | "TIMEOUT"
   | "CLI_ERROR"
-  | "INVALID_ARGS";
+  | "INVALID_ARGS"
+  | "BROWSER_UNAVAILABLE";
 
 export class BrowserActionError extends Error {
   readonly code: BrowserErrorCode;
@@ -73,15 +74,21 @@ export class BrowserActionError extends Error {
 export interface BrowserToolDeps {
   runCli: CliRunner;
   workspaceRoot: string;
+  /** Backoff before the single transient-failure retry (default 2000ms). */
+  retryBackoffMs?: number;
 }
 
 /* ------------------------------------------------------------------ */
 /* Argument + ref validation                                           */
 /* ------------------------------------------------------------------ */
 
-/** Accepts "e5" or "@e5"; returns the canonical "@e5" or null. */
+/** Accepts "e5" or "@e5"; returns the canonical "@e5" or null. Models
+ *  occasionally emit a ref wrapped in stray quote characters ("\"@e42\"" —
+ *  quotes INSIDE the string value): one layer of wrapping quotes is stripped,
+ *  because a ref's intent is unambiguous — the ledger lookup below still
+ *  guards correctness (never-seen refs still fail with UNKNOWN_REF). */
 export function normalizeRef(raw: unknown): string | null {
-  const s = String(raw ?? "").trim();
+  const s = String(raw ?? "").trim().replace(/^["']+/, "").replace(/["']+$/, "").trim();
   const m = /^@?(e\d+)$/.exec(s);
   return m ? `@${m[1]}` : null;
 }
@@ -94,6 +101,36 @@ function str(args: Record<string, unknown>, key: string): string {
 /** Single-quote a dynamic token for bash. */
 function q(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Type gate at the action boundary. The model has live-sent booleans where
+ * strings are required (verify {urlIs: true}, read {url: true}) — naive
+ * String() coercion turned them into the probe "true" and produced nonsense
+ * answers. Fields listed here must be strings when present; booleans, numbers
+ * and objects are rejected with INVALID_ARGS naming the field. fill's text is
+ * the one deliberate exception: an empty string is the documented "clear the
+ * field" form.
+ */
+function rejectNonStringFields(
+  action: string,
+  args: Record<string, unknown>,
+  fields: string[],
+  opts: { allowEmpty?: string[] } = {}
+): void {
+  for (const f of fields) {
+    const v = args[f];
+    if (v === undefined || v === null) continue;
+    const allowEmpty = opts.allowEmpty?.includes(f) === true;
+    if (typeof v !== "string" || (!allowEmpty && v.trim() === "")) {
+      const shown = typeof v === "string" ? JSON.stringify(v) : `${typeof v} (${JSON.stringify(v)})`;
+      throw new BrowserActionError(
+        "INVALID_ARGS",
+        `browser_control ${action}: argument "${f}" must be ${allowEmpty ? "a string" : "a non-empty string"}; got ${shown}.`,
+        `${remedyFor("INVALID_ARGS")} Pass "${f}" as a JSON string value, not ${typeof v}.`
+      );
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -110,6 +147,25 @@ export function classifyCliFailure(text: string, timedOut?: boolean): BrowserErr
   return "CLI_ERROR";
 }
 
+/* Transient host/daemon failures worth ONE bounded retry: fork/resource
+ * exhaustion at spawn (EAGAIN/ENOBUFS/ENFILE, the CLI's "Error executing
+ * binary:" wrapper) and daemon death ("Not attached to an active page").
+ * Grounded in a live capture: a post-click snapshot died with spawn EAGAIN
+ * on a busy host although the click itself had succeeded — reporting a hard
+ * CLI_ERROR there cascades into a false task failure. */
+const TRANSIENT_PATTERNS: RegExp[] = [
+  /\bEAGAIN\b/,
+  /\bENOBUFS\b/,
+  /\bENFILE\b/,
+  /error executing binary/i,
+  /not attached to an active page/i,
+];
+
+export function isTransientBrowserFailure(r: { stdout?: string; stderr?: string }): boolean {
+  const text = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
+  return TRANSIENT_PATTERNS.some((p) => p.test(text));
+}
+
 function remedyFor(code: BrowserErrorCode): string {
   switch (code) {
     case "UNKNOWN_REF":
@@ -122,6 +178,8 @@ function remedyFor(code: BrowserErrorCode): string {
       return "The condition never became true within the budget. Check the URL/text you are waiting on, or verify the page state.";
     case "CLI_ERROR":
       return "The browser command itself failed. Read the message; re-snapshot if the page may have changed.";
+    case "BROWSER_UNAVAILABLE":
+      return "The browser session is unavailable; re-navigate before the next ref action.";
     case "INVALID_ARGS":
       return "Fix the tool arguments to match the action's schema.";
   }
@@ -153,6 +211,8 @@ function resolveInWorkspace(workspaceRoot: string, relPath: string): string {
 
 export function createBrowserTool(deps: BrowserToolDeps) {
   const { runCli, workspaceRoot } = deps;
+  const retryBackoffMs = Math.max(deps.retryBackoffMs ?? 2_000, 0);
+  const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
   /** Last-known ref set per session (from our most recent snapshot). */
   const refLedger = new Map<string, Set<string>>();
@@ -173,14 +233,32 @@ export function createBrowserTool(deps: BrowserToolDeps) {
     return set;
   }
 
-  /** One CLI call; JSON-mode parse with a defensive text fallback. */
+  /** Extract the CLI's own error text (JSON error field, else combined output). */
+  function rawErrorOf(r: CliOutcome): string {
+    const combined = [r.stdout, r.stderr].filter(Boolean).join("\n").trim();
+    const parsed = safeJson(r.stdout);
+    return (parsed && typeof parsed.error === "string" && parsed.error) || combined || `exit code ${r.exitCode}`;
+  }
+
+  /** One CLI call; JSON-mode parse with a defensive text fallback. A transient
+   *  host/daemon failure (spawn EAGAIN/ENOBUFS/ENFILE, dead daemon) gets ONE
+   *  bounded recovery: ~2s backoff, then a single retry. A second failure is
+   *  surfaced as BROWSER_UNAVAILABLE — never as a misleading CLI_ERROR. */
   async function call(
     session: string,
     subcommand: string,
     opts: { timeoutMs?: number; json?: boolean } = {}
-  ): Promise<{ ok: boolean; data: Record<string, unknown> | null; text: string; rawError: string; timedOut: boolean }> {
+  ): Promise<{ ok: boolean; data: Record<string, unknown> | null; text: string; rawError: string; timedOut: boolean; unavailable?: boolean }> {
     const timeoutMs = opts.timeoutMs ?? 30_000;
-    const r = await runCli({ session, subcommand: opts.json === false ? subcommand : `${subcommand} --json`, timeoutMs });
+    const command = opts.json === false ? subcommand : `${subcommand} --json`;
+    let r = await runCli({ session, subcommand: command, timeoutMs });
+    if (!r.ok && isTransientBrowserFailure(r)) {
+      await sleep(retryBackoffMs);
+      r = await runCli({ session, subcommand: command, timeoutMs });
+      if (!r.ok) {
+        return { ok: false, data: null, text: "", rawError: rawErrorOf(r), timedOut: !!r.timedOut, unavailable: true };
+      }
+    }
     const combined = [r.stdout, r.stderr].filter(Boolean).join("\n").trim();
     if (r.ok) {
       const parsed = safeJson(r.stdout);
@@ -190,9 +268,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
       // success exit but non-JSON payload (defensive): treat text as the payload
       return { ok: true, data: null, text: clip(r.stdout.trim() || combined), rawError: "", timedOut: false };
     }
-    const parsed = safeJson(r.stdout);
-    const rawError = (parsed && typeof parsed.error === "string" && parsed.error) || combined || `exit code ${r.exitCode}`;
-    return { ok: false, data: null, text: "", rawError, timedOut: !!r.timedOut };
+    return { ok: false, data: null, text: "", rawError: rawErrorOf(r), timedOut: !!r.timedOut };
   }
 
   function safeJson(s: string): { success?: boolean; data?: unknown; error?: unknown } | null {
@@ -212,7 +288,14 @@ export function createBrowserTool(deps: BrowserToolDeps) {
     }
   }
 
-  function failFrom(session: string, action: string, r: { rawError: string; timedOut: boolean }): BrowserActionError {
+  function failFrom(session: string, action: string, r: { rawError: string; timedOut: boolean; unavailable?: boolean }): BrowserActionError {
+    if (r.unavailable) {
+      return new BrowserActionError(
+        "BROWSER_UNAVAILABLE",
+        `browser_control ${action} failed: browser unavailable after one retry: ${clip(r.rawError, 400)}`,
+        remedyFor("BROWSER_UNAVAILABLE")
+      );
+    }
     const code = classifyCliFailure(r.rawError, r.timedOut);
     return new BrowserActionError(code, `browser_control ${action} failed: ${clip(r.rawError, 600)}`, remedyFor(code));
   }
@@ -296,6 +379,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
     const action = str(args, "action").toLowerCase();
     switch (action) {
       case "navigate": {
+        rejectNonStringFields("navigate", args, ["url"]);
         const url = str(args, "url").trim();
         if (!/^https?:\/\//i.test(url)) {
           throw new BrowserActionError("INVALID_ARGS", "browser_control navigate requires an http(s) url.", "Pass url like 'https://example.com'.");
@@ -330,6 +414,8 @@ export function createBrowserTool(deps: BrowserToolDeps) {
       }
 
       case "fill": {
+        // text:"" is the documented "clear the field" form — type-checked but allowed empty
+        rejectNonStringFields("fill", args, ["text"], { allowEmpty: ["text"] });
         const text = str(args, "text");
         if (str(args, "text").length === 0 && args.text !== "") {
           throw new BrowserActionError("INVALID_ARGS", "browser_control fill requires text.", remedyFor("INVALID_ARGS"));
@@ -346,7 +432,10 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         } catch (e) {
           fillError = e; // execution failure (incl. exhausted stale recovery) — fall through to the inserttext rung
         }
-        if (recovered) return `${recovered}Filled ${ref}.\n${STALE_HINT}`;
+        if (fillError === null) {
+          // the fill itself succeeded (plain or after stale recovery) — done, no fallback rung
+          return `${recovered}Filled ${ref}.\n${STALE_HINT}`;
+        }
         // component rejected the fill (non-stale failure): bounded inserttext fallback
         const f = await call(session, `focus ${q(ref)}`, { timeoutMs: 15_000 });
         if (!f.ok) {
@@ -362,8 +451,10 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         return `[recovered: fill was rejected; focused ${ref} and inserted the text]\nFilled ${ref} via focus + keyboard inserttext.\n${STALE_HINT}`;
       }
 
-      case "type":
+      case "type": {
+        rejectNonStringFields("type", args, ["text"]);
         return refAction(session, "type", args, (ref) => `type ${q(ref)} ${q(str(args, "text"))}`);
+      }
 
       case "press": {
         const key = str(args, "key").trim();
@@ -402,6 +493,7 @@ export function createBrowserTool(deps: BrowserToolDeps) {
         return refAction(session, "scroll_into_view", args, (ref) => `scrollintoview ${q(ref)}`);
 
       case "wait": {
+        rejectNonStringFields("wait", args, ["text", "url", "element"]);
         const text = str(args, "text");
         const url = str(args, "url");
         const element = str(args, "element");
@@ -420,6 +512,9 @@ export function createBrowserTool(deps: BrowserToolDeps) {
       }
 
       case "read": {
+        // booleans/numbers here previously coerced to the string "true" and
+        // produced a nonsense probe (url:true) or were silently ignored (ref:true)
+        rejectNonStringFields("read", args, ["ref", "url"]);
         const ref = normalizeRef(args.ref);
         const url = str(args, "url").trim();
         if (ref && url) throw new BrowserActionError("INVALID_ARGS", "browser_control read takes either ref or url, not both.", remedyFor("INVALID_ARGS"));
@@ -440,6 +535,8 @@ export function createBrowserTool(deps: BrowserToolDeps) {
       }
 
       case "verify": {
+        // live bug: verify {urlIs: true} coerced to the string "true" and probed nonsense
+        rejectNonStringFields("verify", args, ["visible", "enabled", "textContains", "urlIs"]);
         const visible = str(args, "visible");
         const enabled = str(args, "enabled");
         const textContains = str(args, "textContains");
@@ -534,14 +631,24 @@ export function createBrowserTool(deps: BrowserToolDeps) {
 /* ------------------------------------------------------------------ */
 
 /** Real CLI runner: agent-browser is a daemon-backed CLI; the exit code is
- *  the truth. Nonzero exit => ok:false with stdout+stderr preserved. */
+ *  the truth. Nonzero exit => ok:false with stdout+stderr preserved. Spawn-
+ *  class failures (EAGAIN/ENOBUFS/ENFILE arrive as STRING errnos on the error
+ *  object, not exit codes) can die before the CLI prints anything — the errno
+ *  signature is preserved into stderr so the engine's transient detector sees
+ *  it and the bounded retry can run. */
 export const realCliRunner: CliRunner = ({ session, subcommand, timeoutMs }) =>
   new Promise((resolve) => {
     exec(`agent-browser --session ${q(session)} ${subcommand}`, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, shell: "/bin/bash" }, (err, stdout, stderr) => {
       if (err) {
         const timedOut = (err as NodeJS.ErrnoException & { killed?: boolean }).killed === true;
-        const code = typeof (err as { code?: unknown }).code === "number" ? (err as unknown as { code: number }).code : 1;
-        resolve({ ok: false, exitCode: code, stdout: stdout.toString(), stderr: stderr.toString(), timedOut });
+        const rawCode: unknown = (err as { code?: unknown }).code;
+        const code = typeof rawCode === "number" ? rawCode : 1;
+        let stderrText = stderr.toString();
+        const errno = typeof rawCode === "string" ? rawCode : null;
+        if (errno && !stderrText.includes(errno)) {
+          stderrText = [stderrText, `spawn ${err.message || errno}`].filter(Boolean).join("\n");
+        }
+        resolve({ ok: false, exitCode: code, stdout: stdout.toString(), stderr: stderrText, timedOut });
         return;
       }
       resolve({ ok: true, exitCode: 0, stdout: stdout.toString(), stderr: stderr.toString(), timedOut: false });
