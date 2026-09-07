@@ -16,6 +16,11 @@ export function clearActiveVideoEl(el: HTMLVideoElement | null) {
   if (activeVideo === el) activeVideo = null;
 }
 
+/** Read-only access for mirrors (e.g. the managed-session console sampler). */
+export function getActiveVideoEl(): HTMLVideoElement | null {
+  return activeVideo;
+}
+
 /**
  * Snap the current frame of the shared screen into a JPEG data URL.
  * Returns null when no stream/video is ready.
@@ -46,11 +51,16 @@ export async function streamChat(opts: {
   messages: LLMMessage[];
   onDelta: (delta: string) => void;
   onTool?: (event: ToolEvent) => void;
+  /** Fired on every sign of REAL progress (deltas, tool events, response headers).
+   *  Deliberately NOT fired by keepalive comments — the UI-level hang watchdog in
+   *  session-watchdog.ts must only see genuine movement, not liveness pings. */
+  onActivity?: () => void;
   enableTools?: boolean;
   signal?: AbortSignal;
-  /** Max total wall-clock time for the whole stream (default 240s in tool mode). */
+  /** Max total wall-clock time for the whole stream (default 600s in tool mode). */
   totalTimeoutMs?: number;
-  /** Max silence between chunks before the stream is considered hung (default 60s in tool mode). */
+  /** Max silence between chunks before the stream is considered hung (default 75s in tool mode).
+   *  The server sends SSE keepalive comments during long tool runs, which feed this watchdog. */
   idleTimeoutMs?: number;
 }): Promise<string> {
   /* Watchdogs: a wedged SSE (open but silent) used to leave the UI stuck in
@@ -64,7 +74,7 @@ export async function streamChat(opts: {
 
   const totalTimer = setTimeout(
     () => controller.abort(new DOMException("LLM stream timed out", "TimeoutError")),
-    opts.totalTimeoutMs ?? (opts.enableTools ? 240_000 : 120_000)
+    opts.totalTimeoutMs ?? (opts.enableTools ? 600_000 : 120_000)
   );
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const resetIdle = () => {
@@ -97,6 +107,7 @@ export async function streamChat(opts: {
     const contentType = res.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream")) {
       // Provider replied with a plain JSON completion
+      opts.onActivity?.();
       const data = await res.json();
       const text: string = data?.choices?.[0]?.message?.content ?? "";
       if (text) opts.onDelta(text);
@@ -124,15 +135,18 @@ export async function streamChat(opts: {
         try {
           const json = JSON.parse(payload);
           if (json?.tool && opts.onTool) {
+            opts.onActivity?.();
             opts.onTool(json.tool as ToolEvent);
             continue;
           }
           if (json?.tool_result && opts.onTool) {
+            opts.onActivity?.();
             opts.onTool(json.tool_result as ToolEvent);
             continue;
           }
           const delta: unknown = json?.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta) {
+            opts.onActivity?.();
             full += delta;
             opts.onDelta(delta);
           }

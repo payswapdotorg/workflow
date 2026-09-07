@@ -6,6 +6,7 @@ import type {
   RecordedStep,
   ReplayLogEntry,
   ReplayStatus,
+  SessionHealthSnapshot,
   SettingsDTO,
   StepKind,
   StepPayload,
@@ -73,6 +74,31 @@ interface AppState {
   pushReplayMessage: (m: ChatMessage) => void;
   appendReplayMessage: (msgId: string, delta: string) => void;
   patchReplayMessage: (msgId: string, patch: Partial<ChatMessage>) => void;
+
+  /* managed-session console (side panel) */
+  consoleOpen: boolean;
+  setConsoleOpen: (v: boolean) => void;
+  /** True while the console is actively sampling the live screen into its mirror. */
+  consoleStreaming: boolean;
+  setConsoleStreaming: (v: boolean) => void;
+  /** Real count of frames sampled into the console mirror since it started playing. */
+  consoleFrames: number;
+  bumpConsoleFrames: () => void;
+
+  /* console chat — operator -> LLM, message-only (no workflow steps recorded) */
+  consoleMessages: ChatMessage[];
+  consoleThinking: boolean;
+  pushConsoleMessage: (m: ChatMessage) => void;
+  patchConsoleMessage: (id: string, patch: Partial<ChatMessage> | ((m: ChatMessage) => Partial<ChatMessage>)) => void;
+  setConsoleThinking: (v: boolean) => void;
+
+  /* long-running session health (written by session-watchdog) */
+  sessionHealth: SessionHealthSnapshot;
+  setSessionHealth: (h: SessionHealthSnapshot) => void;
+
+  /* boot recovery (populated from localStorage by page.tsx, consumed by the composer) */
+  pendingRecovery: { kind: string; text: string; resubmit: boolean } | null;
+  setPendingRecovery: (r: { kind: string; text: string; resubmit: boolean } | null) => void;
 }
 
 function createAppStore() {
@@ -159,6 +185,40 @@ function createAppStore() {
           e.type === "msg" && e.msg.id === msgId ? { ...e, msg: { ...e.msg, ...patch } } : e
         ),
       })),
+
+    /* ---------------- console ---------------- */
+    consoleOpen: false,
+    setConsoleOpen: (consoleOpen) => set({ consoleOpen }),
+    consoleStreaming: false,
+    setConsoleStreaming: (consoleStreaming) => set({ consoleStreaming }),
+    consoleFrames: 0,
+    bumpConsoleFrames: () => set((s) => ({ consoleFrames: s.consoleFrames + 1 })),
+
+    consoleMessages: [],
+    consoleThinking: false,
+    pushConsoleMessage: (m) => set((s) => ({ consoleMessages: [...s.consoleMessages, m] })),
+    patchConsoleMessage: (id, patch) =>
+      set((s) => ({
+        consoleMessages: s.consoleMessages.map((m) =>
+          m.id === id ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m
+        ),
+      })),
+    setConsoleThinking: (consoleThinking) => set({ consoleThinking }),
+
+    /* ---------------- health / recovery ---------------- */
+    sessionHealth: {
+      state: "idle",
+      kind: null,
+      startedTs: null,
+      lastActivityTs: null,
+      hangThresholdMs: 360_000,
+      lastRecoveryTs: null,
+      suppressed: false,
+    },
+    setSessionHealth: (sessionHealth) => set({ sessionHealth }),
+
+    pendingRecovery: null,
+    setPendingRecovery: (pendingRecovery) => set({ pendingRecovery }),
   }));
 }
 

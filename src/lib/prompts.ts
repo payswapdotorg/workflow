@@ -42,6 +42,10 @@ export const REPLAY_CHAT_SYSTEM = `You are TeachCast's replay assistant. A workf
 
 export const REPLAY_CHAT_SYSTEM_WITH_TOOLS = withToolProtocol(REPLAY_CHAT_SYSTEM);
 
+export const OPERATOR_SYSTEM = `You are TeachCast's operator console assistant. The operator is supervising a long-running computer-use studio from a side console and sends you short messages. Each message may include a screenshot of the current shared screen. Help the operator directly: answer questions about what is on screen, take quick real actions with your tools when asked (read/write files, run commands, drive a browser, compute something), and always report real results. Be concise (1-4 sentences) unless asked for detail. NEVER invent UI elements you cannot see.`;
+
+export const OPERATOR_SYSTEM_WITH_TOOLS = withToolProtocol(OPERATOR_SYSTEM);
+
 
 export const COMPILE_SYSTEM = `You compile a taught screen workflow into a clean JSON app definition.
 

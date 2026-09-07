@@ -13,6 +13,7 @@ import {
   SendHorizontal,
   Square,
   TerminalSquare,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +21,7 @@ import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppStore } from "@/lib/store";
 import { replayEngine } from "@/lib/replay-engine";
+import { sessionWatchdog } from "@/lib/session-watchdog";
 import { stepInstruction } from "@/lib/types";
 import { ToolActivity } from "./tool-activity";
 import { toast } from "sonner";
@@ -38,6 +40,14 @@ export function ReplayPanel() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [log, status]);
+
+  /* draft persistence for the in-replay composer */
+  useEffect(() => {
+    const draft = sessionWatchdog.loadDraft("replay");
+    if (!draft) return;
+    const t = setTimeout(() => setInput(draft), 0);
+    return () => clearTimeout(t);
+  }, []);
 
   if (!workflow) {
     return (
@@ -70,6 +80,7 @@ export function ReplayPanel() {
     const text = input.trim();
     if (!text) return;
     setInput("");
+    sessionWatchdog.clearDraft("replay");
     await replayEngine.sendUserMessage(text);
   };
 
@@ -90,6 +101,12 @@ export function ReplayPanel() {
             <TerminalSquare className="h-2.5 w-2.5" />
             Agent tools on
           </Badge>
+          {workflow.autoLaunch && (
+            <Badge variant="outline" className="hidden h-5 shrink-0 gap-1 border-amber-500/40 px-1.5 text-[10px] text-amber-300 sm:inline-flex" title="This workflow opens automatically when TeachCast starts">
+              <Zap className="h-2.5 w-2.5" />
+              On start
+            </Badge>
+          )}
           <StatusBadge status={status} />
         </div>
         {workflow.description && (
@@ -227,7 +244,10 @@ export function ReplayPanel() {
         <div className="flex items-end gap-2">
           <Textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              sessionWatchdog.saveDraft("replay", e.target.value);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();

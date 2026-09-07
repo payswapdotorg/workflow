@@ -56,6 +56,22 @@ TeachCast's LLM mirrors the chat.z.ai agent toolset and can act on the computer,
 
 Tools are enabled in teaching chat, replay narration, and replay chat. Custom OpenAI-compatible providers use native function calling; providers without function-call support automatically fall back to a JSON tool protocol. Tool executions stream into the UI as live activity rows with expandable output. All file/code tools are rooted at the auto-created `workspace/` directory; path traversal outside it is blocked.
 
+## Long-running sessions (M3)
+
+TeachCast is built to stay open for hours. Three systems keep that honest:
+
+- **Session watchdog** (`src/lib/session-watchdog.ts`) — while a turn is active, the UI requires real progress (deltas, tool events) at least every 6 minutes (tunable via `localStorage.teachcast.hangThresholdMs`). On a hang (frozen message + active spinner), it saves the sent text, reloads the app, restores it, and resubmits. A 3-minute cooldown suppresses reload loops; a suppressed hang surfaces in the status panel with a manual "Reload & recover now" action. The server feeds SSE keepalive comments during long tool runs so legitimate work is never mistaken for a hang.
+- **Session status panel** (header activity icon) — live turn clock, last-real-progress age, hang threshold, screen-share and replay state, and recovery controls.
+- **Launch-on-start** — an installed workflow can claim the exclusive "launch on start" slot (Library → card menu). TeachCast then boots straight into the Replay view for it, pre-armed: share your screen and press Start. (Browsers require a user gesture for `getDisplayMedia`, so the one click stays with you.)
+
+## Managed-session console (M3 groundwork)
+
+The header Console button opens the operator's side panel:
+
+- **Live replay mirror** — samples the shared screen at 2 fps into a canvas with a real frame counter.
+- **Operator → LLM** — a message-only line to the LLM (current frame attached, tools enabled); messages are not recorded as workflow steps.
+- **Managed session** — a dedicated agent-browser session (`teachcast-managed`, separate from the toolset's own browser) with connect / snapshot / disconnect controls. Groundwork for the LLM supervising an external chat.z.ai session from this panel; the LLM-facing tool wiring lands in a follow-up milestone (`/api/managed-session`).
+
 ## Privacy
 
 Frames and chat stay in your browser except for the text (and frames you send to your configured provider) during LLM calls. Nothing is mocked: the screen stream is your real screen, the LLM responses come from a real provider, and workflows persist in SQLite.

@@ -109,6 +109,17 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const emit = (data: unknown) => controller.enqueue(encoder.encode(sse(data)));
+      /* Keepalive comments feed the CLIENT transport idle watchdog while long
+         tool executions or slow provider calls produce no visible events.
+         SSE comment lines (": ping") are ignored by event parsers but keep
+         bytes flowing, so a 60s tool run can never look like a dead stream. */
+      const keepalive = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(`: ping ${Date.now()}\n\n`));
+        } catch {
+          /* stream already closed */
+        }
+      }, 15_000);
       let finalText = "";
 
       try {
@@ -120,6 +131,8 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         const message = err instanceof Error ? err.message : "unknown error";
         finalText = `LLM call failed: ${message}`;
+      } finally {
+        clearInterval(keepalive);
       }
 
       if (finalText) {

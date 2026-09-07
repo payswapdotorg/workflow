@@ -31,6 +31,7 @@ export interface WorkflowSummaryDTO {
   name: string;
   description: string;
   installed: boolean;
+  autoLaunch: boolean;
   lastRunAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -42,6 +43,7 @@ export interface WorkflowDTO {
   name: string;
   description: string;
   installed: boolean;
+  autoLaunch: boolean;
   lastRunAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -102,6 +104,45 @@ export interface LLMMessage {
 }
 
 export type ReplayStatus = "idle" | "running" | "paused" | "finished" | "stopped";
+
+/* ------------------------------------------------------------------ */
+/* Long-running session health (watchdog-driven)                       */
+/* ------------------------------------------------------------------ */
+
+export type SessionHealthState = "idle" | "streaming" | "hung";
+
+/** Live snapshot of the session watchdog, rendered by the status panel. */
+export interface SessionHealthSnapshot {
+  state: SessionHealthState;
+  /** Which surface owns the active turn: "session" | "replay" | "console". */
+  kind: string | null;
+  startedTs: number | null;
+  lastActivityTs: number | null;
+  hangThresholdMs: number;
+  lastRecoveryTs: number | null;
+  /** True when the watchdog suppressed an auto-reload because a recovery ran recently. */
+  suppressed: boolean;
+}
+
+/** Boot-time recovery payload (written before a watchdog reload, consumed on boot). */
+export interface RecoveryRecord {
+  kind: string;
+  text: string;
+  resubmit: boolean;
+  ts: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Managed external session (groundwork — chat.z.ai preview panel)     */
+/* ------------------------------------------------------------------ */
+
+export interface ManagedSessionStatus {
+  active: boolean;
+  url: string | null;
+  snapshot: string | null;
+  snapshotAt: string | null;
+  error: string | null;
+}
 
 export type ReplayLogEntry =
   | { id: string; type: "step"; step: StepDTO; stepIndex: number; done: boolean }

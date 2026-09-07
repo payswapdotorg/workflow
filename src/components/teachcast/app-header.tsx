@@ -1,10 +1,11 @@
 "use client";
 
-import { ExternalLink, LayoutGrid, MonitorPlay, PlayCircle, Settings2, Zap } from "lucide-react";
+import { ExternalLink, LayoutGrid, MonitorPlay, PanelRight, PlayCircle, Settings2, Zap } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/lib/store";
+import { SessionStatus } from "@/components/teachcast/session-status-panel";
 import type { View } from "@/lib/types";
 
 const NAV: Array<{ view: View; label: string; icon: typeof MonitorPlay }> = [
@@ -27,6 +28,8 @@ export function AppHeader() {
   const setView = useAppStore((s) => s.setView);
   const settings = useAppStore((s) => s.settings);
   const replayWorkflow = useAppStore((s) => s.replayWorkflow);
+  const consoleOpen = useAppStore((s) => s.consoleOpen);
+  const setConsoleOpen = useAppStore((s) => s.setConsoleOpen);
   const isEmbedded = useSyncExternalStore(emptySubscribe, getEmbedded, getEmbeddedServer);
 
   const openInNewTab = () => window.open(window.location.href, "_blank", "noopener");
@@ -81,6 +84,24 @@ export function AppHeader() {
       </nav>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* long-running session health indicator */}
+        <SessionStatus />
+
+        {/* managed-session console toggle (studio views) */}
+        <Button
+          size="sm"
+          variant="ghost"
+          className={`h-8 gap-1.5 px-2.5 text-xs ${
+            consoleOpen ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+          }`}
+          onClick={() => setConsoleOpen(!consoleOpen)}
+          aria-label="Toggle console"
+          title="Managed-session console: live mirror, operator chat, external session"
+        >
+          <PanelRight className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Console</span>
+        </Button>
+
         {/* provider badge */}
         <button
           onClick={() => setView("settings")}
