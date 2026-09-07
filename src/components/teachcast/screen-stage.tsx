@@ -14,6 +14,7 @@ import {
 import { cursorBus } from "@/lib/llm-cursor";
 import { teachCapture } from "@/lib/teach-capture-live";
 import { LlmCursorOverlay } from "./llm-cursor-overlay";
+import { LiveBrowserSurface } from "./live-browser-surface";
 import { toast } from "sonner";
 
 const emptySubscribe = () => () => {};
@@ -34,13 +35,19 @@ interface ScreenStageProps {
 export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
   const stream = useAppStore((s) => s.stream);
   const setStream = useAppStore((s) => s.setStream);
-  /* M7: the stage surface follows the chat mode — "teach" shows the operator's
-     shared screen (their real cursor), "act" shows the managed-browser mirror
-     (the LLM cursor acts HERE, and the label says so honestly). */
+  /* The stage surface — "replay" ALWAYS shows the managed browser (the
+     workflow runs there and the operator watches it live), "act" shows the
+     managed-browser mirror (the LLM cursor acts HERE, and the label says so
+     honestly), "teach" shows the operator's shared screen (their real
+     cursor). Operator directive 2026-09-07: the replay shows the browser. */
   const chatMode = useAppStore((s) => s.chatMode);
   const managedFrame = useAppStore((s) => s.managedFrame);
   const managedUrl = useAppStore((s) => s.managedUrl);
   const setManagedFrame = useAppStore((s) => s.setManagedFrame);
+  const setManagedUrl = useAppStore((s) => s.setManagedUrl);
+  /* live = the SSE screencast owns the mirror; !live = snapshot-poll fallback */
+  const [liveOk, setLiveOk] = useState(false);
+  const handleLiveChange = useCallback((live: boolean) => setLiveOk(live), []);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -53,7 +60,7 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const acting = mode === "session" && chatMode === "act";
+  const browserSurface = mode === "replay" || (mode === "session" && chatMode === "act");
 
   /* register the demonstration surface with the learning-mode capture (M7):
      the stage container — capture normalizes against the media box it finds
@@ -63,11 +70,13 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
     return () => teachCapture.registerSurface(null);
   }, []);
 
-  /* act-mode mirror: fetch a REAL screenshot of the managed browser on entry,
-     after every cursor activity (debounced), and on a slow poll — so the
-     mirror always shows the surface the LLM cursor is acting on. */
+  /* browser-surface mirror FALLBACK: the CDP live stream (SSE screencast)
+     owns the stage while frames flow; when it does not (managed browser
+     absent, proxy buffering, relaunch in flight) this heavier snapshot poll
+     keeps a static mirror alive — on entry, after cursor activity (debounced)
+     and on a slow poll. */
   useEffect(() => {
-    if (!acting) return;
+    if (!browserSurface || liveOk) return;
     let alive = true;
     let lastAt = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -102,7 +111,7 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
       clearInterval(poll);
       if (timer) clearTimeout(timer);
     };
-  }, [acting, setManagedFrame]);
+  }, [browserSurface, setManagedFrame, liveOk]);
 
   /* register the active video so captureFrame() reads this element.
      Re-runs on `stream` changes because the <video> is conditionally rendered. */
@@ -224,34 +233,22 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
         flash ? "ring-2 ring-amber-400/70" : ""
       } transition-shadow`}
     >
-      {acting ? (
+      {browserSurface ? (
         <>
-          {managedFrame ? (
-            <img
-              ref={mirrorRef}
-              src={managedFrame}
-              alt="Managed browser mirror — a real screenshot of the browser the LLM is acting on"
-              className="h-full w-full object-contain"
-            />
-          ) : (
-            <div className="flex max-w-md flex-col items-center gap-4 p-8 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900">
-                <Globe className="h-8 w-8 text-sky-400" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-zinc-100">Acting surface: managed browser</h2>
-                <p className="mt-1.5 text-sm leading-relaxed text-zinc-400">
-                  The LLM acts on the dedicated managed browser — its amber cursor will move here. Connect the managed
-                  session from the console panel to bring the mirror live.
-                </p>
-              </div>
-            </div>
-          )}
-          {/* honest surface label: the LLM acts here, not on the operator's screen */}
+          {/* the live, OPERABLE managed browser — CDP screencast downstream,
+              operator mouse/keyboard upstream (operator directive 2026-09-07) */}
+          <LiveBrowserSurface
+            mode={mode}
+            imgRef={mirrorRef}
+            fallbackFrame={managedFrame}
+            onLiveChange={handleLiveChange}
+            onUrl={setManagedUrl}
+          />
+          {/* honest surface label: the run happens here, not on the operator's screen */}
           <div className="absolute left-3 top-3 flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-600/90 px-2.5 py-1 text-xs font-semibold text-white shadow-lg">
               <Globe className="h-3 w-3" />
-              acting: managed browser
+              {mode === "replay" ? "replaying: managed browser" : "acting: managed browser"}
             </span>
             {managedUrl && (
               <span className="hidden max-w-[280px] truncate rounded-full bg-black/60 px-2.5 py-1 font-mono text-xs text-zinc-300 backdrop-blur sm:inline" title={managedUrl}>
@@ -281,7 +278,7 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
               </span>
             )}
             <span className="hidden rounded-full bg-black/60 px-2.5 py-1 text-xs text-zinc-300 backdrop-blur sm:inline">
-              {mode === "session" ? "teaching: your screen" : "Replay target"}
+              {mode === "session" ? "teaching: your screen" : "replay target"}
             </span>
           </div>
           {/* top-right controls */}
@@ -304,13 +301,9 @@ export function ScreenStage({ mode, onSnapshot }: ScreenStageProps) {
             <MonitorUp className="h-8 w-8 text-amber-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">
-              {mode === "session" ? "Share your screen to start teaching" : "Share your screen to replay against it"}
-            </h2>
+            <h2 className="text-lg font-semibold text-zinc-100">Share your screen to start teaching</h2>
             <p className="mt-1.5 text-sm leading-relaxed text-zinc-400">
-              {mode === "session"
-                ? "Your screen is streamed locally in the browser — the teaching surface. Say “watch this” in the chat, demonstrate, then “learn this” to save the lesson."
-                : "The workflow will be replayed step by step against your live screen while the LLM analyzes frames and narrates progress."}
+              Your screen is streamed locally in the browser — the teaching surface. Say “watch this” in the chat, demonstrate, then “learn this” to save the lesson.
             </p>
           </div>
           <Button onClick={share} disabled={requesting || !supported} className="gap-2 bg-amber-500 text-black hover:bg-amber-400">

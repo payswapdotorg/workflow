@@ -1,12 +1,12 @@
 # TeachCast — Computer-Use Teaching Studio
 
-Share your real screen, teach a real LLM a workflow through a live narrated session, save that workflow as a launchable app, then replay it step by step against your live screen while the LLM analyzes frames and narrates progress.
+Share your real screen, teach a real LLM a workflow through a live narrated session, save that workflow as a launchable app, then replay it on the dedicated managed browser — the stage shows that browser LIVE and you can drive it yourself (solve a captcha, log in) while the run executes.
 
 ## What it does
 
 - **Session** — a split view: your live screen on the left (browser Screen Capture API, streamed locally), a teaching chat on the right. Every chat message and manual snapshot captures a canvas frame of your screen at that exact moment and records it as an event with a timestamp. The assistant has the full agent toolset and can act on the computer when you ask it to.
 - **Library** — saved workflows appear as app cards (name, description, step count, last run). Install a workflow to make it launchable.
-- **Replay** — launching a workflow replays it step by step against your live screen: progress bar, per-step cards with the active step highlighted, Pause/Resume/Stop controls, and per-step LLM narration analyzing live frames. The narrator can **act on the computer** to perform steps (create files, run commands, drive a browser). You can chat with the LLM mid-replay.
+- **Replay** — launching a workflow runs it on the **dedicated managed browser** (the `/api/execute` engine: fresh observation + vision re-resolution per step, verified postconditions). The stage shows that browser live over a CDP screencast — and it is **operable**: click into it and your mouse and keyboard land on the real page, so you can resolve a captcha or log in mid-run. The panel is the honest execution record: per-step running/done/skipped/failed, the terminal verdict, and no LLM narration — the browser is the reply.
 - **Settings** — connect any OpenAI-compatible provider (endpoint + model + API key). The key is stored server-side (SQLite via Prisma) and never exposed to the browser. Without a custom provider, TeachCast uses a real built-in LLM (text-only, no mocks).
 
 ## Requirements
@@ -54,7 +54,7 @@ TeachCast turns a live demonstration into a re-runnable app:
 2. **Save** — hit Save: the LLM compiles your recorded events into a named workflow (review/edit before saving). The new workflow appears in the Library immediately — no view toggling needed.
 3. **Install** — Library: press Install on the card to make it launchable. Optionally claim the exclusive **launch-on-start** slot so TeachCast boots straight into it.
 4. **Launch** — Library: press Launch; TeachCast switches to the Replay view for that workflow.
-5. **Replay** — share your screen again and press Start: the workflow replays step by step against your live screen with per-step LLM narration, and the narrator can act on the computer (files, shell, browser) to actually perform each step. Chat mid-replay to steer it.
+5. **Replay** — press Start: the workflow runs on the managed browser, the stage shows that browser live, and you can click into it to operate it yourself (captchas, logins) while the steps settle in the record.
 
 ## Architecture
 
@@ -65,7 +65,8 @@ TeachCast turns a live demonstration into a re-runnable app:
 | Screen capture | `src/lib/screen.ts`, `src/components/teachcast/screen-stage.tsx` | `getDisplayMedia`, canvas frame snapshots, permission watchdog, graceful track-ended handling |
 | Streaming chat | `src/app/api/chat/route.ts` | OpenAI-compatible SSE passthrough for custom providers; real built-in LLM fallback |
 | Workflow compile | `src/app/api/compile/route.ts` | the LLM compiles recorded events into named, replayable steps |
-| Replay engine | `src/lib/replay-engine.ts` | module-level runner: pause/resume/stop, per-step narration, run marking |
+| Replay execution | `src/app/api/execute/route.ts`, `src/lib/exec-client.ts` | the managed-browser run engine: fresh observation, vision re-resolution, verified postconditions, honest step statuses |
+| Live browser bridge | `src/lib/browser-bridge.ts`, `src/lib/browser-bridge-live.ts`, `src/app/api/browser-live/route.ts`, `src/app/api/browser-input/route.ts` | the app connects to the managed browser's CDP endpoint over a websocket, streams the screencast to the stage (SSE), and forwards operator mouse/keyboard onto the real page — this is how captchas get solved and logins happen mid-run |
 | Agent toolset | `src/lib/tool-catalog.ts`, `src/lib/tools.ts`, `src/app/api/tools/exec/route.ts` | mirrors the chat.z.ai agent toolset — `read_file`, `write_file`, `run_shell`, `run_code`, `browser_control` — executed for real on the host, rooted at `workspace/` |
 | Settings | `src/app/api/settings/route.ts` | endpoint/model/key stored server-side, key masked in responses |
 | Route hang guard | `src/lib/api-guard.ts` | every non-streaming JSON route is wrapped in a response deadline; structured 503 instead of silence |
@@ -113,7 +114,7 @@ TeachCast is built to stay open for hours. Three systems keep that honest:
 
 - **Session watchdog** (`src/lib/session-watchdog.ts`) — while a turn is active, the UI requires real progress (deltas, tool events) at least every 6 minutes (tunable via `localStorage.teachcast.hangThresholdMs`). On a hang (frozen message + active spinner), it saves the sent text, reloads the app, restores it, and resubmits. A 3-minute cooldown suppresses reload loops; a suppressed hang surfaces in the status panel with a manual "Reload & recover now" action. The server feeds SSE keepalive comments during long tool runs so legitimate work is never mistaken for a hang.
 - **Session status panel** (header activity icon) — live turn clock, last-real-progress age, hang threshold, screen-share and replay state, and recovery controls.
-- **Launch-on-start** — an installed workflow can claim the exclusive "launch on start" slot (Library → card menu). TeachCast then boots straight into the Replay view for it, pre-armed: share your screen and press Start. (Browsers require a user gesture for `getDisplayMedia`, so the one click stays with you.)
+- **Launch-on-start** — an installed workflow can claim the exclusive "launch on start" slot (Library → card menu). TeachCast then boots straight into the Replay view for it, pre-armed: connect the managed browser (Console → Connect chat.z.ai, if it is not already up) and press Start.
 
 ## Managed-session console (M3 groundwork)
 

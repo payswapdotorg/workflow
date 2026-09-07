@@ -117,7 +117,7 @@ export interface LLMMessage {
   content: string | LLMMessagePart[];
 }
 
-export type ReplayStatus = "idle" | "running" | "paused" | "finished" | "stopped";
+export type ReplayStatus = "idle" | "running" | "finished" | "stopped" | "failed" | "aborted";
 
 /* ------------------------------------------------------------------ */
 /* Long-running session health (watchdog-driven)                       */
@@ -162,10 +162,6 @@ export interface ManagedSessionStatus {
   snapshotAt: string | null;
   error: string | null;
 }
-
-export type ReplayLogEntry =
-  | { id: string; type: "step"; step: StepDTO; stepIndex: number; done: boolean }
-  | { id: string; type: "msg"; msg: ChatMessage };
 
 /* ------------------------------------------------------------------ */
 /* M7 — workflow execution on the managed browser (/api/execute)       */

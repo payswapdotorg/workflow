@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { AppHeader } from "@/components/teachcast/app-header";
 import { ScreenStage } from "@/components/teachcast/screen-stage";
 import { TeachingChat } from "@/components/teachcast/teaching-chat";
@@ -9,7 +9,6 @@ import { ReplayPanel } from "@/components/teachcast/replay-panel";
 import { SettingsView } from "@/components/teachcast/settings-view";
 import { ConsolePanel } from "@/components/teachcast/console-panel";
 import { useAppStore } from "@/lib/store";
-import { replayEngine } from "@/lib/replay-engine";
 import { sessionWatchdog } from "@/lib/session-watchdog";
 import { captureSnapshotStep } from "@/lib/session-actions";
 import type { WorkflowDTO, WorkflowSummaryDTO } from "@/lib/types";
@@ -20,7 +19,6 @@ export default function Home() {
   const view = useAppStore((s) => s.view);
   const setSettings = useAppStore((s) => s.setSettings);
   const consoleOpen = useAppStore((s) => s.consoleOpen);
-  const prevView = useRef(view);
 
   /* load provider settings once */
   useEffect(() => {
@@ -72,22 +70,13 @@ export default function Home() {
         }
         useAppStore.getState().setView("replay");
         toast.success(`Launching “${target.name}”`, {
-          description: "This workflow opens on start. Share your screen and press Start replay.",
+          description: "This workflow opens on start. Press Start run — it executes on the managed browser and the stage shows that browser live.",
         });
       } catch {
         /* launch-on-start is best-effort */
       }
     })();
   }, []);
-
-  /* auto-pause a running replay when the user leaves the Replay view */
-  useEffect(() => {
-    if (prevView.current === "replay" && view !== "replay" && replayEngine.isBusy()) {
-      replayEngine.pause();
-      toast.info("Replay paused", { description: "It will stay paused until you return and press Resume." });
-    }
-    prevView.current = view;
-  }, [view]);
 
   const inStudio = view === "session" || view === "replay";
 

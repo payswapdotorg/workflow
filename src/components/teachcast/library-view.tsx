@@ -197,8 +197,8 @@ export function LibraryView() {
       <div className="mb-6">
         <h1 className="text-xl font-bold text-zinc-100">Workflow Library</h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Workflows you taught in sessions. Install one to make it a launchable app; launching replays it against your
-          live screen.
+          Workflows you taught in sessions. Install one to make it a launchable app; launching runs it on the managed
+          browser — the stage shows that browser live while each step settles.
         </p>
       </div>
 
