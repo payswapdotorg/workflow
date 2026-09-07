@@ -121,47 +121,51 @@ async function runCode(args: Record<string, unknown>): Promise<string> {
 /* ------------------------------------------------------------------ */
 
 const BROWSER_SESSION = "teachcast-agent";
+/** The operator console supervises this dedicated session (M4): the console
+ *  LLM's browser_control acts HERE, deliberately separate from workflow
+ *  replays so the operator can watch and steer it without interference. */
+export const MANAGED_BROWSER_SESSION = "teachcast-managed";
 
-async function browserCli(subcommand: string, timeoutMs = 45_000): Promise<string> {
-  const r = await runCommand(`agent-browser --session ${BROWSER_SESSION} ${subcommand} 2>&1`, {
+async function browserCli(subcommand: string, timeoutMs = 45_000, session = BROWSER_SESSION): Promise<string> {
+  const r = await runCommand(`agent-browser --session ${session} ${subcommand} 2>&1`, {
     cwd: WORKSPACE_ROOT,
     timeoutMs,
   });
   return r.output;
 }
 
-async function browserControl(args: Record<string, unknown>): Promise<string> {
+async function browserControl(args: Record<string, unknown>, session = BROWSER_SESSION): Promise<string> {
   const action = String(args.action ?? "").toLowerCase();
   switch (action) {
     case "open": {
       const url = String(args.url ?? "").trim();
       if (!/^https?:\/\//i.test(url)) throw new Error("browser_control open requires an http(s) url.");
-      const out = await browserCli(`open "${url}"`);
+      const out = await browserCli(`open "${url}"`, 45_000, session);
       return `Browser opened ${url}\n${clip(out, 2000)}`;
     }
     case "snapshot": {
-      const out = await browserCli("snapshot --text --compact");
+      const out = await browserCli("snapshot --text --compact", 45_000, session);
       return clip(out);
     }
     case "click": {
       const selector = String(args.selector ?? "").trim();
       if (!selector) throw new Error("browser_control click requires a CSS selector.");
-      const out = await browserCli(`find css "${selector.replace(/"/g, '\\"')}" click`);
+      const out = await browserCli(`find css "${selector.replace(/"/g, '\\"')}" click`, 45_000, session);
       return `Clicked "${selector}".\n${clip(out, 2000)}`;
     }
     case "type": {
       const selector = String(args.selector ?? "").trim();
       const text = String(args.text ?? "");
       if (!selector) throw new Error("browser_control type requires a CSS selector.");
-      const out = await browserCli(`find css "${selector.replace(/"/g, '\\"')}" fill "${text.replace(/"/g, '\\"')}"`);
+      const out = await browserCli(`find css "${selector.replace(/"/g, '\\"')}" fill "${text.replace(/"/g, '\\"')}"`, 45_000, session);
       return `Typed into "${selector}".\n${clip(out, 2000)}`;
     }
     case "url": {
-      const out = await browserCli("get url");
+      const out = await browserCli("get url", 15_000, session);
       return `Current URL: ${clip(out, 500)}`;
     }
     case "close": {
-      const out = await browserCli("close");
+      const out = await browserCli("close", 30_000, session);
       return `Browser closed.\n${clip(out, 500)}`;
     }
     default:
@@ -169,8 +173,17 @@ async function browserControl(args: Record<string, unknown>): Promise<string> {
   }
 }
 
-/** Executes an agent tool by name. Throws on invalid usage; returns real output. */
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+/** Executes an agent tool by name. Throws on invalid usage; returns real output.
+ *  opts.browserSession scopes browser_control to a concrete agent-browser
+ *  profile (default: the workflow/agent session "teachcast-agent"; the
+ *  operator console passes MANAGED_BROWSER_SESSION so it supervises its own
+ *  dedicated browser). File/shell/code tools are workspace-rooted regardless. */
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  opts?: { browserSession?: string }
+): Promise<string> {
+  const browserSession = opts?.browserSession ?? BROWSER_SESSION;
   if (!isKnownTool(name)) throw new Error(`Unknown tool "${name}".`);
   switch (name) {
     case "read_file":
@@ -182,6 +195,6 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     case "run_code":
       return runCode(args);
     case "browser_control":
-      return browserControl(args);
+      return browserControl(args, browserSession);
   }
 }

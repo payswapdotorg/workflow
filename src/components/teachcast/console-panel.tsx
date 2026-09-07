@@ -26,15 +26,23 @@ import { uid, type LLMMessage, type ManagedSessionStatus } from "@/lib/types";
 import { ToolActivity } from "./tool-activity";
 import { toast } from "sonner";
 
-const EMPTY_MGMT: ManagedSessionStatus = { active: false, url: null, snapshot: null, snapshotAt: null, error: null };
+const EMPTY_MGMT: ManagedSessionStatus = {
+  active: false,
+  url: null,
+  title: null,
+  snapshot: null,
+  frame: null,
+  snapshotAt: null,
+  error: null,
+};
 
 /**
  * Managed-session console — the operator's side panel for long-running sessions:
  *  1. Live mirror of the shared screen with a real frame counter (2 fps sampler).
- *  2. Message-only operator -> LLM chat (no workflow steps recorded).
- *  3. Managed external session groundwork: a dedicated agent-browser session
- *     (teachcast-managed) whose lifecycle the operator controls here; the LLM
- *     will manage it through tools in an upcoming milestone.
+ *  2. Managed external session (M4): a dedicated agent-browser session
+ *     (teachcast-managed) the operator connects, watches (live url/title) and
+ *     snapshots (real frame observations); the operator chat's LLM drives the
+ *     SAME browser through its toolset. Not recorded as workflow steps.
  */
 export function ConsolePanel() {
   const setConsoleOpen = useAppStore((s) => s.setConsoleOpen);
@@ -153,7 +161,7 @@ function LiveMirror() {
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. Managed external session (groundwork)                            */
+/* 2. Managed external session (M4 actualization)                      */
 /* ------------------------------------------------------------------ */
 
 function ManagedSession() {
@@ -165,7 +173,13 @@ function ManagedSession() {
       const res = await fetch("/api/managed-session", { cache: "no-store" });
       if (res.ok) {
         const s = await res.json();
-        setMgmt((prev) => ({ ...prev, active: !!s.active, url: s.url ?? null, error: s.error ?? null }));
+        setMgmt((prev) => ({
+          ...prev,
+          active: !!s.active,
+          url: s.url ?? null,
+          title: s.title ?? null,
+          error: s.active ? null : s.error ?? null,
+        }));
       }
     } catch {
       /* status check is best-effort */
@@ -174,6 +188,9 @@ function ManagedSession() {
 
   useEffect(() => {
     void refresh();
+    /* live state while the console is open: light poll (url + title) */
+    const poll = setInterval(() => void refresh(), 6_000);
+    return () => clearInterval(poll);
   }, [refresh]);
 
   const act = async (action: "open" | "snapshot" | "close") => {
@@ -189,10 +206,27 @@ function ManagedSession() {
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
       if (action === "open") {
-        setMgmt((prev) => ({ ...prev, active: true, url: data.url ?? prev.url, error: null }));
-        toast.success("Managed session opened", { description: "chat.z.ai is up in the managed browser." });
+        setMgmt((prev) => ({
+          ...prev,
+          active: true,
+          url: data.url ?? prev.url,
+          title: data.title ?? null,
+          error: null,
+        }));
+        toast.success("Managed session connected", {
+          description: data.title ? `Real browser up — “${data.title}”` : "The managed browser is up.",
+        });
       } else if (action === "snapshot") {
-        setMgmt((prev) => ({ ...prev, snapshot: data.snapshot ?? "", snapshotAt: data.snapshotAt ?? null, error: null }));
+        setMgmt((prev) => ({
+          ...prev,
+          snapshot: data.snapshot ?? prev.snapshot,
+          frame: data.frame ?? prev.frame,
+          url: data.url ?? prev.url,
+          title: data.title ?? prev.title,
+          snapshotAt: data.snapshotAt ?? prev.snapshotAt,
+          error: null,
+        }));
+        toast.success("Observation captured", { description: "Frame + page snapshot taken from the managed browser." });
       } else {
         setMgmt({ ...EMPTY_MGMT });
         toast.info("Managed session closed");
@@ -219,6 +253,11 @@ function ManagedSession() {
       <p className="truncate font-mono text-[11px] text-zinc-400" title={mgmt.url ?? undefined}>
         {mgmt.active && mgmt.url ? mgmt.url : "not connected"}
       </p>
+      {mgmt.active && (
+        <p className="mt-0.5 truncate text-[11px] text-zinc-300" title={mgmt.title ?? undefined}>
+          {mgmt.title ? mgmt.title : "…loading title"}
+        </p>
+      )}
 
       <div className="mt-2 flex flex-wrap gap-2">
         <Button
@@ -252,17 +291,28 @@ function ManagedSession() {
         </Button>
       </div>
 
+      {mgmt.frame && (
+        <div className="mt-2 overflow-hidden rounded-lg border border-zinc-800 bg-black">
+          <img
+            src={mgmt.frame}
+            alt="Managed browser observation — real screenshot of the current managed page"
+            className="aspect-video w-full object-contain"
+          />
+          <div className="flex items-center justify-between border-t border-zinc-800 px-2 py-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">observation</span>
+            {mgmt.snapshotAt && <span className="text-[10px] text-zinc-600">{new Date(mgmt.snapshotAt).toLocaleTimeString()}</span>}
+          </div>
+        </div>
+      )}
       {mgmt.snapshot && (
         <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-[10px] leading-relaxed text-zinc-400 teachcast-scroll">
           {mgmt.snapshot}
         </pre>
       )}
-      {mgmt.snapshotAt && (
-        <p className="mt-1 text-[10px] text-zinc-600">Snapshot from {new Date(mgmt.snapshotAt).toLocaleTimeString()}</p>
-      )}
+      {mgmt.error && <p className="mt-2 text-[10px] text-red-400/80">{mgmt.error}</p>}
       <p className="mt-2 text-[11px] leading-relaxed text-zinc-600">
-        Groundwork: a dedicated agent-browser session (<span className="font-mono">teachcast-managed</span>) the LLM will
-        supervise from this panel in an upcoming milestone.
+        Dedicated agent-browser session (<span className="font-mono">teachcast-managed</span>): the operator chat below
+        drives this same browser through the LLM toolset — console messages are never recorded as workflow steps.
       </p>
     </section>
   );
@@ -326,6 +376,9 @@ function OperatorChat() {
         system: OPERATOR_SYSTEM_WITH_TOOLS,
         messages: history,
         enableTools: true,
+        /* M4: the operator chat supervises the DEDICATED managed browser —
+           browser_control acts on teachcast-managed, not the replay browser. */
+        browserTarget: "managed",
         onActivity: () => sessionWatchdog.activity(),
         onDelta: (d) => useAppStore.getState().patchConsoleMessage(asstId, (m) => ({ text: m.text + d })),
         onTool: createToolCollector((toolCalls) =>
