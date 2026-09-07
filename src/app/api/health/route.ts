@@ -41,7 +41,9 @@ async function checkBrowser(): Promise<Check> {
       execFile(
         "agent-browser",
         ["--session", "teachcast-managed", "get", "url"],
-        { timeout: 4_000 },
+        /* 2.5s: the browser is a SOFT dependency — /api/health must answer
+           fast even when the daemon is wedged; the hard db check dominates. */
+        { timeout: 2_500 },
         (err, stdout, stderr) => {
           if (!err) {
             const url = stdout.toString().trim();

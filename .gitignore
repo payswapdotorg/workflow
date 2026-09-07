@@ -74,3 +74,6 @@ workspace/
 # e2e runtime artifacts (the suites themselves ARE tracked)
 e2e/*-transcript.md
 e2e/.server.log
+
+# hermetic e2e build directory (throwaway, managed by e2e/run-all.mjs)
+.next-e2e/

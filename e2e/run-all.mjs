@@ -28,6 +28,9 @@ const PORT = Number(process.env.E2E_PORT || 3100);
 const BASE = `http://127.0.0.1:${PORT}`;
 const LOG = path.join(ROOT, "e2e", ".server.log");
 const DB = path.join(ROOT, "db", `e2e-${Date.now()}.db`);
+/* Own build directory: a live operator dev server (e.g. the :3005 preview)
+   holds .next/dev/lock — sharing it would deadlock the hermetic boot. */
+const DIST = ".next-e2e";
 
 const suites = [
   "e2e/api-timeout.mjs",
@@ -47,7 +50,7 @@ async function waitForHealthy(budgetMs) {
   const t0 = Date.now();
   while (Date.now() - t0 < budgetMs) {
     try {
-      const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(4_000) });
+      const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(10_000) });
       if (res.ok) return true;
     } catch {}
     await new Promise((r) => setTimeout(r, 2_000));
@@ -59,6 +62,7 @@ async function main() {
   log(`=== TeachCast e2e runner ===`);
   log(`base: ${BASE}`);
   log(`db:   ${DB} (throwaway)`);
+  log(`dist: ${DIST} (throwaway)`);
   let server = null;
   let logFd = null;
   const failures = [];
@@ -87,6 +91,7 @@ async function main() {
         ...process.env,
         DATABASE_URL: `file:${DB}`,
         ENABLE_DEBUG_ROUTES: "1",
+        TEACHCAST_E2E_DIST: DIST,
       },
       detached: true,
       stdio: ["ignore", logFd.fd, logFd.fd],
@@ -98,6 +103,16 @@ async function main() {
     const healthy = await waitForHealthy(180_000);
     if (!healthy) throw new Error("server never became healthy within 180s (see e2e/.server.log)");
     log("server healthy\n");
+
+    /* 3b. warm every route the suites hit, with a generous budget: the
+       hermetic instance compiles lazily, and first-hit Turbopack latency
+       must never be charged against a suite's (tight, guard-focused)
+       timeouts. */
+    log("warming routes ...");
+    for (const route of ["/api/debug/slow?ms=10", "/api/workflows", "/api/settings"]) {
+      try { await fetch(`${BASE}${route}`, { signal: AbortSignal.timeout(120_000) }); } catch {}
+    }
+    log("routes warm\n");
 
     /* 4. suites */
     for (const suite of suites) {
@@ -126,6 +141,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1_000));
     if (logFd) await logFd.close().catch(() => {});
     await fs.rm(DB, { force: true }).catch(() => {});
+    await fs.rm(path.join(ROOT, DIST), { recursive: true, force: true }).catch(() => {});
   }
 
   log("");
