@@ -11,16 +11,21 @@ Share your real screen, teach a real LLM a workflow through a live narrated sess
 
 ## Requirements
 
-- Node.js / Bun
+- Node.js 20+ (or Bun 1.2+)
+- `agent-browser` CLI on PATH — required for the browser tools and the managed-session console (the computer-use half of TeachCast); everything else works without it
 - Desktop Chrome, Edge, or Firefox for screen sharing (the app must run in a top-level tab — use the "Open in new tab" button when embedded)
 
-## Getting started
+## Getting started (fresh clone)
 
 ```bash
-bun install
-bun run db:push     # create the SQLite database
-bun run dev         # http://localhost:3000
+cp .env.example .env        # DATABASE_URL for the SQLite database
+bun install                 # or: npm install
+bun run db:generate         # prisma client
+bun run db:push             # create the SQLite database (db/ is gitignored)
+bun run dev                 # http://localhost:3000
 ```
+
+No LLM keys are needed to boot: provider settings (endpoint / model / key) are configured in the app under **Settings** and stored server-side; without a configured provider TeachCast uses its real built-in fallback LLM.
 
 Production:
 
@@ -28,6 +33,28 @@ Production:
 bun run build
 bun run start
 ```
+
+## Verify everything
+
+One command runs the whole battery — unit tests, a production build, and the e2e suites against a hermetic dev instance (throwaway SQLite database, own port, auto teardown):
+
+```bash
+bun run verify              # = npm test + npm run build + npm run e2e
+npm test                    # unit tests only (node --test tests/)
+npm run e2e                 # e2e suites only (boots its own server on :3100)
+```
+
+The e2e suites are real integration tests: `e2e/api-timeout.mjs` proves the route hang guard over HTTP, `e2e/library-staleness.mjs` drives a real browser against the Library, and `e2e/computer-use.mjs` runs the M5 acceptance task end to end (real LLM, real tool loop, real Chromium). They need `agent-browser` on PATH and network access. The architect's independent harness can be run the same way: `python3 e2e/architect-suite.py --base http://127.0.0.1:3100`.
+
+## The operator's loop
+
+TeachCast turns a live demonstration into a re-runnable app:
+
+1. **Teach** — Session view: share your screen, perform the task while narrating it in the chat. Every message and manual snapshot records a real frame + text event.
+2. **Save** — hit Save: the LLM compiles your recorded events into a named workflow (review/edit before saving). The new workflow appears in the Library immediately — no view toggling needed.
+3. **Install** — Library: press Install on the card to make it launchable. Optionally claim the exclusive **launch-on-start** slot so TeachCast boots straight into it.
+4. **Launch** — Library: press Launch; TeachCast switches to the Replay view for that workflow.
+5. **Replay** — share your screen again and press Start: the workflow replays step by step against your live screen with per-step LLM narration, and the narrator can act on the computer (files, shell, browser) to actually perform each step. Chat mid-replay to steer it.
 
 ## Architecture
 
@@ -41,6 +68,8 @@ bun run start
 | Replay engine | `src/lib/replay-engine.ts` | module-level runner: pause/resume/stop, per-step narration, run marking |
 | Agent toolset | `src/lib/tool-catalog.ts`, `src/lib/tools.ts`, `src/app/api/tools/exec/route.ts` | mirrors the chat.z.ai agent toolset — `read_file`, `write_file`, `run_shell`, `run_code`, `browser_control` — executed for real on the host, rooted at `workspace/` |
 | Settings | `src/app/api/settings/route.ts` | endpoint/model/key stored server-side, key masked in responses |
+| Route hang guard | `src/lib/api-guard.ts` | every non-streaming JSON route is wrapped in a response deadline; structured 503 instead of silence |
+| Health | `src/app/api/health/route.ts` | db ping (hard dep) + browser daemon probe (soft dep), self-bounded checks |
 
 ## Agent toolset
 
@@ -69,6 +98,14 @@ Every `browser_control` failure returns one compact JSON line `{code, message, r
 | `BROWSER_UNAVAILABLE` | transient host/daemon failure (spawn `EAGAIN`/`ENOBUFS`/`ENFILE`, "Error executing binary", dead daemon "Not attached to an active page") persisted after one ~2s backoff retry | the browser session is unavailable; re-navigate before the next ref action |
 | `CLI_ERROR` | the browser command itself failed | read the message; re-snapshot if the page may have changed |
 | `INVALID_ARGS` | arguments failed validation (unknown action, or wrong type — e.g. a boolean where a string is required) | fix the arguments to match the action's schema |
+
+## Production hardening (M6)
+
+**No silent API hangs.** Under host memory pressure a Prisma call once never settled, leaving clients waiting forever. Every non-streaming JSON route now runs under `withRouteTimeout()` (`src/lib/api-guard.ts`): if the handler does not settle within its budget the client receives a structured `503 {error:{code:"ROUTE_TIMEOUT",message,remedy}}`, and the server logs the runaway. Budgets are tuned per route: data routes 30s, tool execution and managed-session 60s, workflow compile 120s. The streaming `/api/chat` route is bounded instead by its own SSE watchdogs (15s keepalive, 45s idle abort, 120s total abort).
+
+**Health endpoint.** `GET /api/health` reports component status with self-bounded checks so it can never hang itself: `db` (a failed ping degrades the response to 503 — it is a hard dependency) and `browser` (the agent-browser daemon probe — a soft dependency, reported but never degrading).
+
+**Library freshness.** The Library revalidates while it is open: store workflow mutations (save / install / delete / launch-on-start / replay run-mark) bump a version that triggers a background refetch, re-entering the Library via its nav button refetches, and external changes (another tab, an LLM tool call, the API) are caught by focus/visibility revalidation and a gentle 10s poll while the list is on screen.
 
 ## Long-running sessions (M3)
 
