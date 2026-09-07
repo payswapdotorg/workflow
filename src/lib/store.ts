@@ -4,7 +4,6 @@ import { create } from "zustand";
 import type {
   ChatMessage,
   RecordedStep,
-  ReplayLogEntry,
   ReplayStatus,
   SessionHealthSnapshot,
   SettingsDTO,
@@ -18,17 +17,6 @@ import type {
 } from "./types";
 import { uid } from "./types";
 import type { DraftStep } from "./teach-capture";
-
-/* ------------------------------------------------------------------ */
-/* Replay log helpers                                                  */
-/* ------------------------------------------------------------------ */
-
-export function pushReplayMsg(
-  log: ReplayLogEntry[],
-  msg: ChatMessage
-): ReplayLogEntry[] {
-  return [...log, { id: uid(), type: "msg", msg }];
-}
 
 /* ------------------------------------------------------------------ */
 /* Store                                                               */
@@ -71,19 +59,8 @@ interface AppState {
   /* replay */
   replayWorkflow: WorkflowDTO | null;
   replayStatus: ReplayStatus;
-  replayCursor: number;
-  replayDoneCount: number;
-  replayLog: ReplayLogEntry[];
   setReplayWorkflow: (w: WorkflowDTO | null) => void;
   setReplayStatus: (s: ReplayStatus) => void;
-  setReplayCursor: (i: number) => void;
-  setReplayDoneCount: (n: number) => void;
-  resetReplayRun: () => void;
-  pushReplayStepEntry: (stepIndex: number) => void;
-  markReplayStepDone: (stepIndex: number) => void;
-  pushReplayMessage: (m: ChatMessage) => void;
-  appendReplayMessage: (msgId: string, delta: string) => void;
-  patchReplayMessage: (msgId: string, patch: Partial<ChatMessage>) => void;
 
   /* managed-session console (side panel) */
   consoleOpen: boolean;
@@ -174,56 +151,14 @@ function createAppStore() {
     bumpLibraryVersion: () => set((s) => ({ libraryVersion: s.libraryVersion + 1 })),
 
     /* ---------------- replay ----------------- */
+    /* Operator directive 2026-09-07: the replay runs on the managed browser
+       (/api/execute) — the narration engine and its chat log are removed;
+       replayStatus mirrors the exec run for the status panel. */
     replayWorkflow: null,
-    replayStatus: "idle",
-    replayCursor: -1,
-    replayDoneCount: 0,
-    replayLog: [],
+    replayStatus: "idle" as ReplayStatus,
     setReplayWorkflow: (replayWorkflow) =>
-      set({ replayWorkflow, replayStatus: "idle", replayCursor: -1, replayDoneCount: 0, replayLog: [] }),
+      set({ replayWorkflow, replayStatus: "idle", execRun: null }),
     setReplayStatus: (replayStatus) => set({ replayStatus }),
-    setReplayCursor: (replayCursor) => set({ replayCursor }),
-    setReplayDoneCount: (replayDoneCount) => set({ replayDoneCount }),
-    resetReplayRun: () =>
-      set((s) => {
-        const wf = s.replayWorkflow;
-        return {
-          replayLog: wf
-            ? [{ id: uid(), type: "step" as const, step: wf.steps[0], stepIndex: 0, done: false }]
-            : [],
-          replayCursor: wf ? 0 : -1,
-          replayDoneCount: 0,
-          replayStatus: "running" as ReplayStatus,
-        };
-      }),
-    pushReplayStepEntry: (stepIndex) =>
-      set((s) => {
-        const wf = s.replayWorkflow;
-        if (!wf || !wf.steps[stepIndex]) return {};
-        return {
-          replayLog: [...s.replayLog, { id: uid(), type: "step" as const, step: wf.steps[stepIndex], stepIndex, done: false }],
-        };
-      }),
-    markReplayStepDone: (stepIndex) =>
-      set((s) => ({
-        replayLog: s.replayLog.map((e) =>
-          e.type === "step" && e.stepIndex === stepIndex ? { ...e, done: true } : e
-        ),
-      })),
-    pushReplayMessage: (m) =>
-      set((s) => ({ replayLog: [...s.replayLog, { id: uid(), type: "msg" as const, msg: m }] })),
-    appendReplayMessage: (msgId, delta) =>
-      set((s) => ({
-        replayLog: s.replayLog.map((e) =>
-          e.type === "msg" && e.msg.id === msgId ? { ...e, msg: { ...e.msg, text: e.msg.text + delta } } : e
-        ),
-      })),
-    patchReplayMessage: (msgId, patch) =>
-      set((s) => ({
-        replayLog: s.replayLog.map((e) =>
-          e.type === "msg" && e.msg.id === msgId ? { ...e, msg: { ...e.msg, ...patch } } : e
-        ),
-      })),
 
     /* ---------------- console ---------------- */
     consoleOpen: false,
@@ -269,8 +204,20 @@ function createAppStore() {
     draftSteps: null,
     setDraftSteps: (draftSteps) => set({ draftSteps }),
     execRun: null,
-    setExecRun: (execRun) => set({ execRun }),
-    patchExecRun: (patch) => set((s) => (s.execRun ? { execRun: { ...s.execRun, ...patch } } : {})),
+    setExecRun: (execRun) =>
+      set((s) => ({
+        execRun,
+        replayStatus: execRun ? execRun.status : ("idle" as ReplayStatus),
+      })),
+    patchExecRun: (patch) =>
+      set((s) =>
+        s.execRun
+          ? {
+              execRun: { ...s.execRun, ...patch },
+              ...(patch.status ? { replayStatus: patch.status as ReplayStatus } : {}),
+            }
+          : {}
+      ),
     pushExecLog: (entry) =>
       set((s) => (s.execRun ? { execRun: { ...s.execRun, log: [...s.execRun.log, entry] } } : {})),
     managedFrame: null,

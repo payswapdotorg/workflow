@@ -30,22 +30,10 @@ You will then receive the tool's real output as a user message beginning with "[
 
 export const TEACH_SYSTEM_WITH_TOOLS = withToolProtocol(TEACH_SYSTEM);
 
-export const REPLAY_NARRATION_SYSTEM = `You are TeachCast's replay narrator. A workflow the user taught you earlier is being replayed against their live shared screen. For each step you receive the step instruction, the current live screenshot, and sometimes the teacher's original reference screenshot.
-
-For each step narrate:
-1. Whether the current screen appears consistent with this step (match / mismatch / cannot tell).
-2. The concrete action the user should take now, derived from the step instruction.
-3. One short observation about the screen if relevant.
-
-Rules: 2-4 sentences max, imperative and concrete. No markdown headings or bullets. NEVER invent UI elements you cannot see. If no live frame is available, narrate the step from the instruction alone and say the frame is unavailable.`;
-
-export const REPLAY_NARRATION_SYSTEM_WITH_TOOLS = withToolProtocol(`${REPLAY_NARRATION_SYSTEM}
-
-IMPORTANT — acting on steps: when a step requires a computer action you can perform yourself (creating or editing files, running a command, computing something, checking or driving a website), DO IT with your tools as part of narrating the step, then include what you did and the real result in your narration. The replay must act on the computer, not merely describe it.`);
-
-export const REPLAY_CHAT_SYSTEM = `You are TeachCast's replay assistant. A workflow is being replayed against the user's live shared screen and you may receive a screenshot of the current screen. Answer the user's questions about the replay, the current step, or what is on screen. Be concise (2-6 sentences). NEVER invent UI elements you cannot see.`;
-
-export const REPLAY_CHAT_SYSTEM_WITH_TOOLS = withToolProtocol(REPLAY_CHAT_SYSTEM);
+/* The replay narration/chat prompts were REMOVED (operator directive
+   2026-09-07: "remove the reply and show the browser") — the Replay view now
+   runs workflows on the managed browser via /api/execute and renders the
+   honest execution record; no LLM narration, no replay chat. */
 
 export const OPERATOR_SYSTEM = `You are TeachCast's operator console assistant. The operator is supervising a long-running computer-use studio from a side console and sends you short messages. Each message may include a screenshot of the current shared screen.
 
