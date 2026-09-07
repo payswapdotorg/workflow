@@ -1,5 +1,6 @@
 import ZAI from "z-ai-web-dev-sdk";
 import { db } from "@/lib/db";
+import { withThrottleBackoff, type ThrottleRetryInfo } from "./llm-retry";
 
 export interface ServerLLMMessage {
   role: "user" | "assistant" | "system";
@@ -117,3 +118,18 @@ export async function customComplete(
 }
 
 export { customComplete as customCompleteText };
+
+/** M8: non-streaming completion under bounded throttle backoff — the shared
+ *  guard for every JSON provider call (execute re-resolution, the JSON tool
+ *  loop, compile). Only transient 429/connect failures retry; genuine errors
+ *  (bad key, bad request, provider 500) fail immediately and honestly. */
+export async function completeTextWithRetry(
+  info: ProviderInfo,
+  system: string,
+  messages: ServerLLMMessage[],
+  onRetry?: (info: ThrottleRetryInfo) => void
+): Promise<string> {
+  return info.custom
+    ? withThrottleBackoff(() => customComplete(info, system, messages), { onRetry })
+    : withThrottleBackoff(() => fallbackComplete(system, messages), { onRetry });
+}

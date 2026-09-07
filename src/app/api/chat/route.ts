@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   completionsUrl,
-  customCompleteText,
-  fallbackCompleteText,
+  completeTextWithRetry,
   getProviderSettings,
+  type ProviderInfo,
   type ServerLLMMessage,
 } from "@/lib/llm-server";
+import { withThrottleBackoff } from "@/lib/llm-retry";
 import { executeTool, MANAGED_BROWSER_SESSION } from "@/lib/tools";
 import { openAIToolSchema, TOOL_DEFINITIONS } from "@/lib/tool-catalog";
 import { withToolProtocol } from "@/lib/prompts";
@@ -80,19 +81,29 @@ export async function POST(req: NextRequest) {
   if (!enableTools) {
     if (info.custom) {
       try {
-        const upstream = await fetch(completionsUrl(info.endpoint), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${info.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: info.model || "gpt-4o-mini",
-            messages: [{ role: "system", content: system }, ...llmMessages],
-            stream: true,
-            temperature: 0.4,
-          }),
-          signal: AbortSignal.timeout(180_000),
+        /* M8: establishment (connect + status line) runs under bounded
+           throttle backoff — nothing has been streamed yet, so a retry is
+           fully honest. Once the body flows, failures stay honest. */
+        const upstream = await withThrottleBackoff(async () => {
+          const r = await fetch(completionsUrl(info.endpoint), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${info.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: info.model || "gpt-4o-mini",
+              messages: [{ role: "system", content: system }, ...llmMessages],
+              stream: true,
+              temperature: 0.4,
+            }),
+            signal: AbortSignal.timeout(180_000),
+          });
+          if (r.status === 429) {
+            const text = await r.text().catch(() => "");
+            throw new Error(`Provider error 429: ${text.slice(0, 400)}`);
+          }
+          return r;
         });
         if (!upstream.ok || !upstream.body) {
           const text = await upstream.text().catch(() => "");
@@ -110,7 +121,7 @@ export async function POST(req: NextRequest) {
 
     /* built-in fallback, no tools */
     try {
-      const full = await fallbackCompleteText(system, llmMessages);
+      const full = await completeTextWithRetry(info, system, llmMessages);
       if (!full) {
         return NextResponse.json({ error: "Built-in provider returned an empty response" }, { status: 502 });
       }
@@ -241,16 +252,26 @@ async function runCustomToolLoop(
   ];
 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-    const res = await fetch(completionsUrl(info.endpoint), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${info.apiKey}` },
-      body: JSON.stringify({
-        model: info.model || "gpt-4o-mini",
-        messages: convo,
-        tools: openAIToolSchema(),
-        temperature: 0.4,
-      }),
-      signal: AbortSignal.timeout(120_000),
+    /* M8: each loop iteration's provider call is throttle-guarded. A 429
+       defers the turn (keepalives cover the silent window) instead of
+       killing a multi-step computer-use run mid-flight. */
+    const res = await withThrottleBackoff(async () => {
+      const r = await fetch(completionsUrl(info.endpoint), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${info.apiKey}` },
+        body: JSON.stringify({
+          model: info.model || "gpt-4o-mini",
+          messages: convo,
+          tools: openAIToolSchema(),
+          temperature: 0.4,
+        }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (r.status === 429) {
+        const text = await r.text().catch(() => "");
+        throw new Error(`Provider error 429: ${text.slice(0, 300)}`);
+      }
+      return r;
     });
 
     if (!res.ok) {
@@ -303,7 +324,7 @@ async function runCustomToolLoop(
     }
   }
   /* iterations exhausted — ask for a final prose answer without tools */
-  return customCompleteText(info, system, [
+  return completeTextWithRetry(info, system, [
     ...llmMessages,
     {
       role: "user",
@@ -329,9 +350,8 @@ async function runJsonToolLoop(
   const convo = llmMessages.map((m) => ({ ...m }));
 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-    const reply = info.custom
-      ? await customCompleteText(info, system, convo)
-      : await fallbackCompleteText(system, convo);
+    /* M8: same throttle guard for the JSON-protocol loop. */
+    const reply = await completeTextWithRetry(info, system, convo);
 
     const parsed = extractJson(reply);
     const toolName = typeof parsed?.tool === "string" ? (parsed.tool as string) : null;

@@ -19,12 +19,16 @@
  *      reading the value back.
  *   F. honest failure: a target that does not exist is NEVER clicked — the
  *      run reports skip/failure, not phantom success.
+ *   G. THROTTLE_PROBE (M8): a provider that really answers 429 is retried
+ *      with the bounded backoff schedule, then fails with the structured
+ *      error — retries visible, never instant death, never fake success.
  *
  * Usage: node e2e/dual-cursor.mjs (env: TEACHCAST_URL). Writes
  * e2e/dual-cursor-transcript.md.
  */
 import { execFile } from "child_process";
 import { promises as fs } from "fs";
+import http from "http";
 
 const BASE = process.env.TEACHCAST_URL || "http://localhost:3005";
 const TRANSCRIPT = new URL("./dual-cursor-transcript.md", import.meta.url).pathname;
@@ -238,6 +242,63 @@ log(`\nexec events: ${f.exec.length}`);
 for (const x of f.exec) log(`- ${JSON.stringify(x).slice(0, 240)}`);
 check("F1: the nonexistent target was NOT clicked (ran === 0)", fDone && Number(fDone.ran) === 0, JSON.stringify(fDone));
 check("F2: the run reports the outcome honestly (skipped or failed, never a clean success)", fDone && fDone.ok === true ? Number(fDone.skipped) > 0 || Number(fDone.failed) > 0 : true, JSON.stringify(fDone));
+
+/* ================= Task G: THROTTLE_PROBE — bounded backoff on a real 429 ================= */
+
+log("\n## Task G — THROTTLE_PROBE: a throttling provider is retried with bounded backoff (M8)");
+
+/* A REAL local HTTP endpoint that always answers 429 — no fabricated LLM
+ * output anywhere (the no-mock law): the app talks to a real socket that
+ * really throttles, the same environmental condition peak hours produce.
+ * Before M8 the provider call failed on the first 429 in <1s; after M8 the
+ * call must run the bounded schedule (2s+4s+8s ±jitter ≥ ~11.2s) and then
+ * fail with the structured, retry-counting error. Probe points /api/compile
+ * (the lightest non-streaming provider path) at the throttle server through
+ * the REAL settings API, and restores settings in finally. */
+{
+  const probe = http.createServer((req, res) => {
+    res.writeHead(429, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "Too many requests, please try again later" } }));
+  });
+  await new Promise((r) => probe.listen(0, "127.0.0.1", r));
+  const port = probe.address().port;
+  const put = (payload) =>
+    fetch(`${BASE}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
+    });
+  try {
+    const putRes = await put({ endpoint: `http://127.0.0.1:${port}`, apiKey: "probe-key", model: "probe-model" });
+    if (!putRes.ok) {
+      check("G0: probe provider configured via the real settings API", false, `HTTP ${putRes.status}`);
+    } else {
+      const t0 = Date.now();
+      const res = await fetch(`${BASE}/api/compile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ events: [{ kind: "message", text: "throttle probe" }] }),
+        signal: AbortSignal.timeout(90_000),
+      });
+      const elapsed = Date.now() - t0;
+      const data = await res.json().catch(() => null);
+      const errMsg = String(data?.error ?? "");
+      log(`probe: HTTP ${res.status} in ${(elapsed / 1000).toFixed(1)}s — ${errMsg.slice(0, 200)}`);
+      check("G1: the throttled call ran the bounded retry schedule (≥10s; instant failure was the M7 bug)", elapsed >= 10_000 && elapsed < 60_000, `${elapsed}ms`);
+      check(
+        "G2: terminal failure is honest and structured — retries exhausted + 429 cause visible",
+        res.status === 502 && /3 retries exhausted/.test(errMsg) && /429/.test(errMsg),
+        `HTTP ${res.status} ${errMsg}`
+      );
+    }
+  } finally {
+    /* restore builtin provider — the throwaway db is deleted anyway, but the
+       suite leaves no poisoned state behind if it ever runs against a shared db */
+    await put({ endpoint: "", apiKey: "", model: "" }).catch(() => {});
+    probe.close();
+  }
+}
 
 /* ================= verdict ================= */
 

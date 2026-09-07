@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { customComplete, extractJson, fallbackComplete, getProviderSettings, type ServerLLMMessage } from "@/lib/llm-server";
+import { completeTextWithRetry, extractJson, getProviderSettings } from "@/lib/llm-server";
 import { COMPILE_SYSTEM, buildCompileUserPrompt } from "@/lib/prompts";
 import { withRouteTimeout } from "@/lib/api-guard";
 import type { CompiledStep } from "@/lib/types";
@@ -42,13 +42,11 @@ async function POST_impl(req: NextRequest) {
 
   let raw: string;
   try {
-    if (info.custom) {
-      const messages: ServerLLMMessage[] = [{ role: "user", content: userPrompt }];
-      raw = await customComplete(info, COMPILE_SYSTEM, messages);
-    } else {
-      const messages: ServerLLMMessage[] = [{ role: "user", content: userPrompt }];
-      raw = await fallbackComplete(COMPILE_SYSTEM, messages);
-    }
+    /* M8: throttle-guarded like every other provider call — a transient 429
+       defers the compile instead of surfacing a failure to the operator. */
+    raw = await completeTextWithRetry(info, COMPILE_SYSTEM, [
+      { role: "user", content: userPrompt },
+    ]);
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
     return NextResponse.json({ error: `LLM compilation failed: ${message}` }, { status: 502 });

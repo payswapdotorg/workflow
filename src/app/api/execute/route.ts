@@ -5,8 +5,9 @@ import path from "path";
 import { db } from "@/lib/db";
 import { withRouteTimeout } from "@/lib/api-guard";
 import { executeTool, MANAGED_BROWSER_SESSION } from "@/lib/tools";
-import { extractJson, customCompleteText, fallbackCompleteText, getProviderSettings } from "@/lib/llm-server";
+import { completeTextWithRetry, extractJson, getProviderSettings } from "@/lib/llm-server";
 import { RERESOLVE_SYSTEM } from "@/lib/prompts";
+import type { ThrottleRetryInfo } from "@/lib/llm-retry";
 import type { ServerLLMMessage } from "@/lib/llm-server";
 import type { CursorEvent } from "@/lib/browser-tool";
 
@@ -114,7 +115,10 @@ interface Resolution {
   skip: string | null;
 }
 
-/** One LLM call re-grounding a taught step against the CURRENT page. */
+/** One LLM call re-grounding a taught step against the CURRENT page.
+ *  M8: runs under bounded throttle backoff — a transient 429 defers the
+ *  step (surfaced via onThrottle for the run log) instead of killing the
+ *  run; exhausted retries fail the step with the structured error. */
 async function reResolve(
   step: {
     label: string;
@@ -124,7 +128,8 @@ async function reResolve(
     y?: number;
     thumb?: string | null;
   },
-  current: { snapshotText: string | null; frame: string | null }
+  current: { snapshotText: string | null; frame: string | null },
+  onThrottle?: (info: ThrottleRetryInfo) => void
 ): Promise<Resolution> {
   const parts: Record<string, unknown>[] = [];
   const captured =
@@ -151,9 +156,7 @@ async function reResolve(
 
   const messages: ServerLLMMessage[] = [{ role: "user", content: parts }];
   const info = await getProviderSettings();
-  const reply = info.custom
-    ? await customCompleteText(info, RERESOLVE_SYSTEM, messages)
-    : await fallbackCompleteText(RERESOLVE_SYSTEM, messages);
+  const reply = await completeTextWithRetry(info, RERESOLVE_SYSTEM, messages, onThrottle);
 
   const parsed = extractJson(reply);
   if (!parsed) {
@@ -316,7 +319,17 @@ export async function POST(req: NextRequest) {
               y: typeof payload.y === "number" ? payload.y : undefined,
               thumb: typeof payload.thumb === "string" ? payload.thumb : null,
             };
-            const res = await reResolve(step, current);
+            const res = await reResolve(step, current, ({ attempt, delayMs }) => {
+              /* M8: the deferral is visible in the run log — the operator
+                 sees WHY a step sat still for seconds instead of failing
+                 or silently hanging. */
+              emit({
+                exec: {
+                  type: "note",
+                  text: `step deferred (provider throttled, retry ${attempt}/3, waiting ${(delayMs / 1000).toFixed(1)}s)`,
+                },
+              });
+            });
             if (res.skip) {
               skipped++;
               emit({ exec: { type: "step", index, status: "skipped", detail: res.skip } });
