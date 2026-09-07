@@ -7,7 +7,8 @@ import {
   type ServerLLMMessage,
 } from "@/lib/llm-server";
 import { executeTool } from "@/lib/tools";
-import { openAIToolSchema } from "@/lib/tool-catalog";
+import { openAIToolSchema, TOOL_DEFINITIONS } from "@/lib/tool-catalog";
+import { withToolProtocol } from "@/lib/prompts";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -22,7 +23,8 @@ const sseHeaders = {
   Connection: "keep-alive",
 };
 
-const MAX_TOOL_ITERATIONS = 5;
+/* Architect review (PR #1): 5 starved multi-step tasks — 12-16 required. */
+const MAX_TOOL_ITERATIONS = 14;
 
 export async function POST(req: NextRequest) {
   let body: { system?: unknown; messages?: unknown; enableTools?: unknown };
@@ -123,10 +125,16 @@ export async function POST(req: NextRequest) {
       let finalText = "";
 
       try {
+        /* Server-owned tool protocol (architect review blocker 2): enableTools
+           ALWAYS injects the protocol server-side, whatever system the caller
+           supplied — without it the model narrates fabricated results instead
+           of emitting tool calls. withToolProtocol is idempotent, so blessed
+           client prompts (TEACH_SYSTEM_WITH_TOOLS etc.) pass through. */
+        const toolSystem = withToolProtocol(system);
         if (info.custom) {
-          finalText = await runCustomToolLoop(info, system, llmMessages, emit);
+          finalText = await runCustomToolLoop(info, toolSystem, llmMessages, emit);
         } else {
-          finalText = await runJsonToolLoop(system, llmMessages, emit);
+          finalText = await runJsonToolLoop(toolSystem, llmMessages, emit);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "unknown error";
@@ -238,7 +246,30 @@ async function runCustomToolLoop(
       msg.tool_calls ?? [];
 
     if (toolCalls.length === 0) {
-      return typeof msg.content === "string" ? msg.content : "";
+      const content = typeof msg.content === "string" ? msg.content : "";
+      /* JSON-protocol bridge (architect review blocker 1): the provider may
+         answer with a {"tool","args"} JSON body instead of native tool_calls
+         — or ignore the native schema entirely and 200 with JSON content.
+         The model is following the protocol: execute it and continue the
+         loop instead of dropping it as final prose. Unknown tool names are
+         left as prose so explanatory JSON in ordinary answers never runs. */
+      const parsed = extractJson(content);
+      const jsonTool =
+        parsed &&
+        typeof parsed.tool === "string" &&
+        TOOL_DEFINITIONS.some((t) => t.name === parsed.tool)
+          ? (parsed.tool as string)
+          : null;
+      if (jsonTool) {
+        const output = await execAndEmit(jsonTool, JSON.stringify(parsed?.args ?? {}), emit);
+        convo.push({ role: "assistant", content: content.trim().slice(0, 4000) });
+        convo.push({
+          role: "user",
+          content: `[tool result] ${jsonTool} executed. Output:\n${output.slice(0, 8000)}\n\nContinue: call another tool the same way, or reply in plain prose when done.`,
+        });
+        continue;
+      }
+      return content;
     }
 
     convo.push({ role: "assistant", content: msg.content ?? null, tool_calls: toolCalls });

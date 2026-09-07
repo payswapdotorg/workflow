@@ -9,11 +9,16 @@ Your job during a teaching session:
 - Keep track of the workflow steps being taught. If the user asks, summarize the steps recorded so far as a numbered list.
 - Be concise (2-6 sentences), practical and friendly. Plain text only, no markdown headings.`;
 
-/** Appended to any system prompt when agent tools are enabled (JSON protocol). */
+/** Marker substring present in every tool-protocol system prompt. */
+export const TOOL_PROTOCOL_MARKER = "AGENT TOOLS — you can act on the computer, not just talk";
+
+/** Appended to any system prompt when agent tools are enabled (JSON protocol).
+ *  Idempotent: a prompt that already carries the protocol is returned unchanged. */
 export function withToolProtocol(base: string): string {
+  if (base.includes(TOOL_PROTOCOL_MARKER)) return base;
   return `${base}
 
-AGENT TOOLS — you can act on the computer, not just talk. Available tools, all executed for real:
+${TOOL_PROTOCOL_MARKER}. Available tools, all executed for real:
 ${toolCatalogText()}
 
 Everything runs in the workspace directory: ${workspaceInfoText()}. File paths are relative to it.
