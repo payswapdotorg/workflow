@@ -1,310 +1,221 @@
-"use client";
-
 import { create } from "zustand";
 import type {
+  BuildInfo,
+  BuildPhase,
   ChatMessage,
-  RecordedStep,
-  ReplayLogEntry,
-  ReplayStatus,
-  SessionHealthSnapshot,
-  SettingsDTO,
-  StepKind,
-  StepPayload,
-  View,
-  WorkflowDTO,
-  WorkflowSummaryDTO,
-  ExecLogEntry,
-  ExecRunState,
-} from "./types";
-import { uid } from "./types";
-import type { DraftStep } from "./teach-capture";
+  ChatSummary,
+  StatusResponse,
+} from "@/lib/types";
 
-/* ------------------------------------------------------------------ */
-/* Replay log helpers                                                  */
-/* ------------------------------------------------------------------ */
-
-export function pushReplayMsg(
-  log: ReplayLogEntry[],
-  msg: ChatMessage
-): ReplayLogEntry[] {
-  return [...log, { id: uid(), type: "msg", msg }];
+interface TeachCastState {
+  chats: ChatSummary[];
+  activeChatId: string | null;
+  messages: ChatMessage[];
+  chatsLoading: boolean;
+  threadLoading: boolean;
+  sending: boolean;
+  error: string | null;
+  build: BuildInfo | null;
+  init: () => Promise<void>;
+  selectChat: (id: string) => Promise<void>;
+  createChat: () => Promise<void>;
+  sendMessage: (text: string) => Promise<void>;
+  refreshChats: () => Promise<void>;
+  refreshMessages: (chatId: string) => Promise<void>;
+  clearError: () => void;
 }
 
-/* ------------------------------------------------------------------ */
-/* Store                                                               */
-/* ------------------------------------------------------------------ */
-
-interface AppState {
-  /* navigation */
-  view: View;
-  setView: (v: View) => void;
-
-  /* provider settings (cached) */
-  settings: SettingsDTO | null;
-  setSettings: (s: SettingsDTO | null) => void;
-
-  /* shared screen stream (session + replay) */
-  stream: MediaStream | null;
-  setStream: (s: MediaStream | null) => void;
-
-  /* teaching session */
-  sessionMessages: ChatMessage[];
-  sessionSteps: RecordedStep[];
-  sessionThinking: boolean;
-  pushSessionMessage: (m: ChatMessage) => void;
-  patchSessionMessage: (id: string, patch: Partial<ChatMessage> | ((m: ChatMessage) => Partial<ChatMessage>)) => void;
-  pushSessionStep: (kind: StepKind, payload: StepPayload, ts?: string) => void;
-  setSessionThinking: (v: boolean) => void;
-  resetSession: () => void;
-
-  /* library */
-  workflows: WorkflowSummaryDTO[];
-  setWorkflows: (w: WorkflowSummaryDTO[]) => void;
-  /** Bumped on every workflow mutation from anywhere in the app (save,
-   *  install, delete, launch-on-start, replay markRun) and on Library
-   *  re-entry (nav click while Library is already active). LibraryView
-   *  refetches whenever it changes, so the list can never go stale — even
-   *  when the Library is already the active view. */
-  libraryVersion: number;
-  bumpLibraryVersion: () => void;
-
-  /* replay */
-  replayWorkflow: WorkflowDTO | null;
-  replayStatus: ReplayStatus;
-  replayCursor: number;
-  replayDoneCount: number;
-  replayLog: ReplayLogEntry[];
-  setReplayWorkflow: (w: WorkflowDTO | null) => void;
-  setReplayStatus: (s: ReplayStatus) => void;
-  setReplayCursor: (i: number) => void;
-  setReplayDoneCount: (n: number) => void;
-  resetReplayRun: () => void;
-  pushReplayStepEntry: (stepIndex: number) => void;
-  markReplayStepDone: (stepIndex: number) => void;
-  pushReplayMessage: (m: ChatMessage) => void;
-  appendReplayMessage: (msgId: string, delta: string) => void;
-  patchReplayMessage: (msgId: string, patch: Partial<ChatMessage>) => void;
-
-  /* managed-session console (side panel) */
-  consoleOpen: boolean;
-  setConsoleOpen: (v: boolean) => void;
-  /** True while the console is actively sampling the live screen into its mirror. */
-  consoleStreaming: boolean;
-  setConsoleStreaming: (v: boolean) => void;
-  /** Real count of frames sampled into the console mirror since it started playing. */
-  consoleFrames: number;
-  bumpConsoleFrames: () => void;
-
-  /* console chat — operator -> LLM, message-only (no workflow steps recorded) */
-  consoleMessages: ChatMessage[];
-  consoleThinking: boolean;
-  pushConsoleMessage: (m: ChatMessage) => void;
-  patchConsoleMessage: (id: string, patch: Partial<ChatMessage> | ((m: ChatMessage) => Partial<ChatMessage>)) => void;
-  setConsoleThinking: (v: boolean) => void;
-
-  /* long-running session health (written by session-watchdog) */
-  sessionHealth: SessionHealthSnapshot;
-  setSessionHealth: (h: SessionHealthSnapshot) => void;
-
-  /* boot recovery (populated from localStorage by page.tsx, consumed by the composer) */
-  pendingRecovery: { kind: string; text: string; resubmit: boolean } | null;
-  setPendingRecovery: (r: { kind: string; text: string; resubmit: boolean } | null) => void;
-
-  /* ---------------- M7 dual-cursor teaching ---------------- */
-  /** Teaching-chat mode: "teach" (user demonstrates on the shared screen) or
-   *  "act" (the LLM acts on the managed browser, cursor mirrored). The stage
-   *  reads this to switch surfaces and to label them honestly. */
-  chatMode: "teach" | "act";
-  setChatMode: (m: "teach" | "act") => void;
-  /** Learning capture: the raw event buffer lives in the module-level
-   *  teachCapture singleton (high-frequency pointer events must not re-render
-   *  the tree); the store mirrors only what the UI renders. */
-  captureArmed: boolean;
-  captureEventCount: number;
-  setCaptureArmed: (v: boolean) => void;
-  setCaptureEventCount: (n: number) => void;
-  /** Synthesized draft workflow (from "learn this") pending review/save. */
-  draftSteps: DraftStep[] | null;
-  setDraftSteps: (s: DraftStep[] | null) => void;
-  /** Live execution run (POST /api/execute) streamed into the chat. */
-  execRun: ExecRunState | null;
-  setExecRun: (r: ExecRunState | null) => void;
-  patchExecRun: (patch: Partial<ExecRunState>) => void;
-  pushExecLog: (entry: ExecLogEntry) => void;
-  /** Last real screenshot of the managed browser (data URL) — the act-mode
-   *  surface mirrored on the stage while the LLM cursor moves over it. */
-  managedFrame: string | null;
-  managedUrl: string | null;
-  setManagedFrame: (frame: string | null, url?: string | null) => void;
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `Request failed (${res.status})`);
+  }
+  return (await res.json()) as T;
 }
 
-function createAppStore() {
-    return create<AppState>((set, get) => ({
-      view: "session",
-    setView: (view) => set({ view }),
+export const useTeachCast = create<TeachCastState>()((set, get) => {
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let pollChatId: string | null = null;
+  let lastPhase: BuildPhase | null = null;
 
-    settings: null,
-    setSettings: (settings) => set({ settings }),
+  function isActivePhase(phase: BuildPhase): boolean {
+    return phase !== "ready" && phase !== "error";
+  }
 
-    stream: null,
-    setStream: (stream) => set({ stream }),
+  function stopPolling() {
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollTimer = null;
+    pollChatId = null;
+    lastPhase = null;
+  }
 
-    /* ---------------- session ---------------- */
-    sessionMessages: [],
-    sessionSteps: [],
-    sessionThinking: false,
-    pushSessionMessage: (m) => set((s) => ({ sessionMessages: [...s.sessionMessages, m] })),
-    patchSessionMessage: (id, patch) =>
-      set((s) => ({
-        sessionMessages: s.sessionMessages.map((m) =>
-          m.id === id ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m
-        ),
-      })),
-    pushSessionStep: (kind, payload, ts) =>
-      set((s) => ({
-        sessionSteps: [...s.sessionSteps, { id: uid(), kind, payload, ts: ts ?? new Date().toISOString() }],
-      })),
-    setSessionThinking: (v) => set({ sessionThinking: v }),
-    resetSession: () => set({ sessionMessages: [], sessionSteps: [], sessionThinking: false }),
+  async function tickPolling(chatId: string): Promise<void> {
+    if (pollChatId !== chatId) return;
+    let status: StatusResponse;
+    try {
+      status = await fetchJson<StatusResponse>(`/api/teachcast-status?chatId=${chatId}`);
+    } catch {
+      return; // transient poll failure; next tick retries
+    }
+    if (pollChatId !== chatId) return;
 
-    /* ---------------- library ---------------- */
-    workflows: [],
-    setWorkflows: (workflows) => set({ workflows }),
-    libraryVersion: 0,
-    bumpLibraryVersion: () => set((s) => ({ libraryVersion: s.libraryVersion + 1 })),
+    const nextBuild: BuildInfo | null = status.hasBuild
+      ? {
+          phase: status.phase,
+          detail: status.detail,
+          progress: status.progress,
+          slug: status.slug ?? null,
+          updatedAt: status.updatedAt ?? null,
+        }
+      : null;
+    const current = get().build;
+    const unchanged =
+      current === null || nextBuild === null
+        ? current === nextBuild
+        : current.phase === nextBuild.phase &&
+          current.progress === nextBuild.progress &&
+          current.detail === nextBuild.detail &&
+          current.slug === nextBuild.slug;
+    if (!unchanged) set({ build: nextBuild });
 
-    /* ---------------- replay ----------------- */
-    replayWorkflow: null,
-    replayStatus: "idle",
-    replayCursor: -1,
-    replayDoneCount: 0,
-    replayLog: [],
-    setReplayWorkflow: (replayWorkflow) =>
-      set({ replayWorkflow, replayStatus: "idle", replayCursor: -1, replayDoneCount: 0, replayLog: [] }),
-    setReplayStatus: (replayStatus) => set({ replayStatus }),
-    setReplayCursor: (replayCursor) => set({ replayCursor }),
-    setReplayDoneCount: (replayDoneCount) => set({ replayDoneCount }),
-    resetReplayRun: () =>
-      set((s) => {
-        const wf = s.replayWorkflow;
-        return {
-          replayLog: wf
-            ? [{ id: uid(), type: "step" as const, step: wf.steps[0], stepIndex: 0, done: false }]
-            : [],
-          replayCursor: wf ? 0 : -1,
-          replayDoneCount: 0,
-          replayStatus: "running" as ReplayStatus,
-        };
-      }),
-    pushReplayStepEntry: (stepIndex) =>
-      set((s) => {
-        const wf = s.replayWorkflow;
-        if (!wf || !wf.steps[stepIndex]) return {};
-        return {
-          replayLog: [...s.replayLog, { id: uid(), type: "step" as const, step: wf.steps[stepIndex], stepIndex, done: false }],
-        };
-      }),
-    markReplayStepDone: (stepIndex) =>
-      set((s) => ({
-        replayLog: s.replayLog.map((e) =>
-          e.type === "step" && e.stepIndex === stepIndex ? { ...e, done: true } : e
-        ),
-      })),
-    pushReplayMessage: (m) =>
-      set((s) => ({ replayLog: [...s.replayLog, { id: uid(), type: "msg" as const, msg: m }] })),
-    appendReplayMessage: (msgId, delta) =>
-      set((s) => ({
-        replayLog: s.replayLog.map((e) =>
-          e.type === "msg" && e.msg.id === msgId ? { ...e, msg: { ...e.msg, text: e.msg.text + delta } } : e
-        ),
-      })),
-    patchReplayMessage: (msgId, patch) =>
-      set((s) => ({
-        replayLog: s.replayLog.map((e) =>
-          e.type === "msg" && e.msg.id === msgId ? { ...e, msg: { ...e.msg, ...patch } } : e
-        ),
-      })),
+    const phaseChanged = status.phase !== lastPhase;
+    if (isActivePhase(status.phase) || (phaseChanged && status.hasBuild)) {
+      await get().refreshMessages(chatId);
+    }
+    if (phaseChanged) {
+      lastPhase = status.phase;
+      await get().refreshChats();
+    }
+  }
 
-    /* ---------------- console ---------------- */
-    consoleOpen: false,
-    setConsoleOpen: (consoleOpen) => set({ consoleOpen }),
-    consoleStreaming: false,
-    setConsoleStreaming: (consoleStreaming) => set({ consoleStreaming }),
-    consoleFrames: 0,
-    bumpConsoleFrames: () => set((s) => ({ consoleFrames: s.consoleFrames + 1 })),
+  function startPolling(chatId: string) {
+    if (pollChatId === chatId && pollTimer !== null) return;
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollChatId = chatId;
+    lastPhase = null;
+    pollTimer = setInterval(() => void tickPolling(chatId), 1000);
+    void tickPolling(chatId);
+  }
 
-    consoleMessages: [],
-    consoleThinking: false,
-    pushConsoleMessage: (m) => set((s) => ({ consoleMessages: [...s.consoleMessages, m] })),
-    patchConsoleMessage: (id, patch) =>
-      set((s) => ({
-        consoleMessages: s.consoleMessages.map((m) =>
-          m.id === id ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m
-        ),
-      })),
-    setConsoleThinking: (consoleThinking) => set({ consoleThinking }),
+  return {
+    chats: [],
+    activeChatId: null,
+    messages: [],
+    chatsLoading: true,
+    threadLoading: false,
+    sending: false,
+    error: null,
+    build: null,
 
-    /* ---------------- health / recovery ---------------- */
-    sessionHealth: {
-      state: "idle",
-      kind: null,
-      startedTs: null,
-      lastActivityTs: null,
-      hangThresholdMs: 360_000,
-      lastRecoveryTs: null,
-      suppressed: false,
+    init: async () => {
+      try {
+        const data = await fetchJson<{ chats: ChatSummary[] }>("/api/chats");
+        set({ chats: data.chats, chatsLoading: false });
+        if (data.chats.length > 0) await get().selectChat(data.chats[0].id);
+      } catch {
+        set({
+          chatsLoading: false,
+          error: "Could not load your chats — check the dev server and retry.",
+        });
+      }
     },
-    setSessionHealth: (sessionHealth) => set({ sessionHealth }),
 
-    pendingRecovery: null,
-    setPendingRecovery: (pendingRecovery) => set({ pendingRecovery }),
+    selectChat: async (id) => {
+      stopPolling();
+      set({ activeChatId: id, messages: [], build: null, threadLoading: true, error: null });
+      try {
+        const data = await fetchJson<{ chat: ChatSummary; messages: ChatMessage[] }>(
+          `/api/chats/${id}/messages`
+        );
+        set({ messages: data.messages, build: data.chat.build, threadLoading: false });
+      } catch {
+        set({ threadLoading: false, error: "Could not load this conversation." });
+      }
+      startPolling(id);
+    },
 
-    /* ---------------- M7 dual-cursor teaching ---------------- */
-    chatMode: "teach",
-    setChatMode: (chatMode) => set({ chatMode }),
-    captureArmed: false,
-    captureEventCount: 0,
-    setCaptureArmed: (captureArmed) => set({ captureArmed }),
-    setCaptureEventCount: (captureEventCount) => set({ captureEventCount }),
-    draftSteps: null,
-    setDraftSteps: (draftSteps) => set({ draftSteps }),
-    execRun: null,
-    setExecRun: (execRun) => set({ execRun }),
-    patchExecRun: (patch) => set((s) => (s.execRun ? { execRun: { ...s.execRun, ...patch } } : {})),
-    pushExecLog: (entry) =>
-      set((s) => (s.execRun ? { execRun: { ...s.execRun, log: [...s.execRun.log, entry] } } : {})),
-    managedFrame: null,
-    managedUrl: null,
-    setManagedFrame: (managedFrame, managedUrl) =>
-      set((s) => ({ managedFrame, managedUrl: managedUrl === undefined ? s.managedUrl : managedUrl })),
-  }));
-}
+    createChat: async () => {
+      try {
+        const data = await fetchJson<{ chat: ChatSummary }>("/api/chats", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        stopPolling();
+        set({
+          chats: [data.chat, ...get().chats],
+          activeChatId: data.chat.id,
+          messages: [],
+          build: null,
+          threadLoading: false,
+          error: null,
+        });
+        startPolling(data.chat.id);
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Could not start a new chat.",
+        });
+      }
+    },
 
-/**
- * The store instance is cached on globalThis (dev only) so React Fast Refresh /
- * HMR re-evaluations of this module reuse the SAME zustand store. Without this,
- * a hot reload can mount fresh components against a new store while previously
- * mounted components are still subscribed to the old one — clicks would update
- * state that the UI never re-renders from (the "nav buttons do nothing" class
- * of bug). In production the module evaluates once, so this is a no-op wrapper.
- */
-const storeGlobals = globalThis as unknown as { __teachcastStore?: ReturnType<typeof createAppStore> };
-export const useAppStore: ReturnType<typeof createAppStore> =
-  storeGlobals.__teachcastStore ?? createAppStore();
-if (process.env.NODE_ENV !== "production") {
-  storeGlobals.__teachcastStore = useAppStore;
-}
+    sendMessage: async (text) => {
+      const { activeChatId, sending } = get();
+      const trimmed = text.trim();
+      if (!activeChatId || trimmed.length === 0 || sending) return;
+      const optimistic: ChatMessage = {
+        id: `pending-${Date.now()}`,
+        role: "user",
+        text: trimmed,
+        createdAt: new Date().toISOString(),
+      };
+      set({ sending: true, error: null, messages: [...get().messages, optimistic] });
+      try {
+        const data = await fetchJson<{ message: ChatMessage }>(
+          `/api/chats/${activeChatId}/messages`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: trimmed }),
+          }
+        );
+        set({
+          messages: get().messages.map((m) => (m.id === optimistic.id ? data.message : m)),
+        });
+        lastPhase = null; // a new prompt restarts the phase machine for this chat
+        await get().refreshChats();
+      } catch (error) {
+        set({
+          messages: get().messages.filter((m) => m.id !== optimistic.id),
+          error: error instanceof Error ? error.message : "Could not send the message.",
+        });
+      } finally {
+        set({ sending: false });
+      }
+    },
 
-/** Convenience helper: the session's last N messages (text only) as LLM history. */
-export function recentSessionHistory(): LLMHistory[] {
-  const { sessionMessages } = useAppStore.getState();
-  return sessionMessages
-    .filter((m) => !m.error && m.text.trim())
-    .slice(-16)
-    .map((m) => ({ role: m.role, content: m.text }));
-}
+    refreshChats: async () => {
+      try {
+        const data = await fetchJson<{ chats: ChatSummary[] }>("/api/chats");
+        set({ chats: data.chats });
+      } catch {
+        // transient — the next poll retries
+      }
+    },
 
-export interface LLMHistory {
-  role: "user" | "assistant";
-  content: string;
-}
+    refreshMessages: async (chatId) => {
+      if (get().activeChatId !== chatId) return;
+      try {
+        const data = await fetchJson<{ chat: ChatSummary; messages: ChatMessage[] }>(
+          `/api/chats/${chatId}/messages`
+        );
+        const pending = get().messages.filter((m) => m.id.startsWith("pending-"));
+        set({ messages: [...data.messages, ...pending] });
+      } catch {
+        // transient — the next poll retries
+      }
+    },
+
+    clearError: () => set({ error: null }),
+  };
+});

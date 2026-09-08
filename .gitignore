@@ -1,79 +1,9 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-!.env.example
-
-# vercel
-.vercel
-
-
-# typescript
+node_modules/
+.next/
+out/
+build/
+db/*.db
+dev.log
+.env*.local
 *.tsbuildinfo
 next-env.d.ts
-local-*
-.claude
-.z-ai-config
-*.log
-dev.log
-dev.out.log
-test
-prompt
-
-server.log
-# Skills directory
-/skills/
-# TeachCast runtime / sandbox artifacts (must never be published)
-db/
-upload/
-download/
-worklog.md
-examples/
-mini-services/
-scripts/
-.zscripts
-.caddy
-Caddyfile
-agent-ctx/
-.agent-ctx
-server.log
-
-# agent toolset runtime workspace
-workspace/
-
-# e2e runtime artifacts (the suites themselves ARE tracked)
-e2e/*-transcript.md
-e2e/.server.log
-
-# hermetic e2e build directory (throwaway, managed by e2e/run-all.mjs)
-.next-e2e/
