@@ -18,7 +18,6 @@ function ToggleGroup({
   className,
   variant,
   size,
-  children,
   ...props
 }: React.ComponentProps<typeof ToggleGroupPrimitive.Root> &
   VariantProps<typeof toggleVariants>) {
@@ -34,7 +33,7 @@ function ToggleGroup({
       {...props}
     >
       <ToggleGroupContext.Provider value={{ variant, size }}>
-        {children}
+        {props.children}
       </ToggleGroupContext.Provider>
     </ToggleGroupPrimitive.Root>
   )

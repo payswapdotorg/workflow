@@ -1,128 +1,71 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { AppHeader } from "@/components/teachcast/app-header";
-import { ScreenStage } from "@/components/teachcast/screen-stage";
-import { TeachingChat } from "@/components/teachcast/teaching-chat";
-import { LibraryView } from "@/components/teachcast/library-view";
-import { ReplayPanel } from "@/components/teachcast/replay-panel";
-import { SettingsView } from "@/components/teachcast/settings-view";
-import { ConsolePanel } from "@/components/teachcast/console-panel";
-import { useAppStore } from "@/lib/store";
-import { replayEngine } from "@/lib/replay-engine";
-import { sessionWatchdog } from "@/lib/session-watchdog";
-import { captureSnapshotStep } from "@/lib/session-actions";
-import type { WorkflowDTO, WorkflowSummaryDTO } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { useEffect } from "react";
 import { toast } from "sonner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AppHeader } from "@/components/app-header";
+import { ChatSidebar } from "@/components/chat-sidebar";
+import { ChatThread } from "@/components/chat-thread";
+import { PromptBox } from "@/components/prompt-box";
+import { WorkspacePanel } from "@/components/workspace-panel";
+import { useTeachCast } from "@/lib/store";
 
 export default function Home() {
-  const view = useAppStore((s) => s.view);
-  const setSettings = useAppStore((s) => s.setSettings);
-  const consoleOpen = useAppStore((s) => s.consoleOpen);
-  const prevView = useRef(view);
+  const init = useTeachCast((s) => s.init);
+  const error = useTeachCast((s) => s.error);
+  const clearError = useTeachCast((s) => s.clearError);
 
-  /* load provider settings once */
   useEffect(() => {
-    fetch("/api/settings", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((s) => s && useAppStore.getState().setSettings(s))
-      .catch(() => {});
-  }, [setSettings]);
+    void init();
+  }, [init]);
 
-  /* Boot: session watchdog (hang detection / auto-recovery), recovery record,
-     and Chrome-app style launch-on-start. Runs once per page load. */
   useEffect(() => {
-    sessionWatchdog.attach();
-
-    /* 1. consume a pending recovery record written before a watchdog reload */
-    const rec = sessionWatchdog.popRecovery();
-    if (rec) {
-      useAppStore.getState().setPendingRecovery({
-        kind: rec.kind,
-        text: rec.text,
-        /* the operator console restores its draft only — no surprise resends */
-        resubmit: rec.kind === "session" ? rec.resubmit : false,
-      });
-      if (rec.kind === "console") useAppStore.getState().setConsoleOpen(true);
-      toast.info("Recovered from a frozen session", {
-        description: rec.resubmit && rec.kind === "session"
-          ? "Your draft was restored and will be resubmitted."
-          : "Your draft was restored.",
-      });
+    if (error) {
+      toast.error(error);
+      clearError();
     }
-
-    /* 2. launch-on-start: open straight into the chosen installed workflow */
-    (async () => {
-      try {
-        const res = await fetch("/api/workflows", { cache: "no-store" });
-        if (!res.ok) return;
-        const list = (await res.json()) as WorkflowSummaryDTO[];
-        const target = list.find((w) => w.autoLaunch && w.installed);
-        if (!target) return;
-        const fullRes = await fetch(`/api/workflows/${target.id}`, { cache: "no-store" });
-        if (!fullRes.ok) return;
-        const full = (await fullRes.json()) as WorkflowDTO;
-        useAppStore.getState().setReplayWorkflow(full);
-        if (rec?.resubmit && rec.kind === "session") {
-          toast.info(`“${target.name}” is armed`, {
-            description: "Launch-on-start workflow is ready in the Replay view.",
-          });
-          return;
-        }
-        useAppStore.getState().setView("replay");
-        toast.success(`Launching “${target.name}”`, {
-          description: "This workflow opens on start. Share your screen and press Start replay.",
-        });
-      } catch {
-        /* launch-on-start is best-effort */
-      }
-    })();
-  }, []);
-
-  /* auto-pause a running replay when the user leaves the Replay view */
-  useEffect(() => {
-    if (prevView.current === "replay" && view !== "replay" && replayEngine.isBusy()) {
-      replayEngine.pause();
-      toast.info("Replay paused", { description: "It will stay paused until you return and press Resume." });
-    }
-    prevView.current = view;
-  }, [view]);
-
-  const inStudio = view === "session" || view === "replay";
+  }, [error, clearError]);
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-dvh min-h-screen flex-col">
+      <h1 className="sr-only">TeachCast v2</h1>
       <AppHeader />
-
-      <main className="min-h-0 flex-1">
-        {/* Studio: persistent split view (screen left / chat right / console) */}
-        <div className={cn("h-full min-h-0", !inStudio && "hidden")}>
-          <div className="flex h-full min-h-0 flex-col lg:flex-row">
-            <div className="h-[42vh] shrink-0 border-zinc-800/80 lg:h-auto lg:min-h-0 lg:flex-1 lg:border-r">
-              <ScreenStage mode={view === "replay" ? "replay" : "session"} onSnapshot={captureSnapshotStep} />
+      <div className="flex min-h-0 flex-1">
+        <ChatSidebar />
+        <main className="flex min-h-0 flex-1 flex-col">
+          <Tabs defaultValue="chat" className="flex min-h-0 flex-1 flex-col">
+            <div className="shrink-0 border-b px-4 py-2.5 md:hidden">
+              <TabsList className="grid h-12 w-full grid-cols-2">
+                <TabsTrigger value="chat" className="h-11 text-sm">
+                  Chat
+                </TabsTrigger>
+                <TabsTrigger value="workspace" className="h-11 text-sm">
+                  Workspace
+                </TabsTrigger>
+              </TabsList>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col lg:w-[440px] lg:max-w-[440px] lg:flex-none xl:w-[480px] xl:max-w-[480px]">
-              {view === "replay" ? <ReplayPanel /> : <TeachingChat />}
+            <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+              <TabsContent
+                value="chat"
+                forceMount
+                className="mt-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden md:w-[60%] md:shrink-0 md:data-[state=inactive]:!flex"
+              >
+                <section aria-label="Conversation" className="flex min-h-0 flex-1 flex-col">
+                  <ChatThread />
+                  <PromptBox />
+                </section>
+              </TabsContent>
+              <TabsContent
+                value="workspace"
+                forceMount
+                className="mt-0 flex min-h-0 flex-1 flex-col border-t data-[state=inactive]:hidden md:flex-1 md:border-l md:border-t-0 md:data-[state=inactive]:!flex"
+              >
+                <WorkspacePanel />
+              </TabsContent>
             </div>
-            {consoleOpen && (
-              <div className="hidden w-[340px] shrink-0 border-zinc-800/80 lg:block lg:border-l">
-                <ConsolePanel />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Library */}
-        <div className={cn("h-full min-h-0", view !== "library" && "hidden")}>
-          <LibraryView />
-        </div>
-
-        {/* Settings */}
-        <div className={cn("h-full min-h-0", view !== "settings" && "hidden")}>
-          <SettingsView />
-        </div>
-      </main>
+          </Tabs>
+        </main>
+      </div>
     </div>
   );
 }

@@ -7,37 +7,25 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Workflow {id, name, description, steps[]}
-model Workflow {
-  id          String    @id @default(cuid())
-  name        String
-  description String    @default("")
-  installed   Boolean   @default(false)
-  autoLaunch  Boolean   @default(false)
-  lastRunAt   DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  steps       Step[]
+model Chat {
+  id             String    @id @default(cuid())
+  title          String
+  createdAt      DateTime  @default(now())
+  buildPhase     String?
+  buildDetail    String?
+  buildProgress  Int?
+  buildSlug      String?
+  buildUpdatedAt DateTime?
+  messages       Message[]
 }
 
-// Step {kind: message|snapshot|action, payload, ts}
-model Step {
-  id         String   @id @default(cuid())
-  workflowId String
-  kind       String // "message" | "snapshot" | "action" (M7 taught click/type)
-  payload    String // JSON string: { text?, image?, note? } | { actionType, x?, y?, text?, label, thumb? }
-  ts         DateTime
-  order      Int
-  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+model Message {
+  id        String   @id @default(cuid())
+  chatId    String
+  role      String
+  text      String
+  createdAt DateTime @default(now())
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
-  @@index([workflowId, order])
-}
-
-// LLM provider settings — API key stored server-side only
-model Settings {
-  id        String   @id @default("singleton")
-  endpoint  String   @default("")
-  apiKey    String   @default("")
-  model     String   @default("")
-  updatedAt DateTime @updatedAt
+  @@index([chatId, createdAt])
 }

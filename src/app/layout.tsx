@@ -1,48 +1,21 @@
-import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
+import type { Metadata } from "next";
 import { Toaster } from "@/components/ui/sonner";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "TeachCast — Computer-Use Teaching Studio",
+  title: "TeachCast v2",
   description:
-    "Share your screen, teach a real LLM your workflows through live interactive sessions, then install them as launchable apps and replay them against your screen.",
-  keywords: ["TeachCast", "computer use", "screen share", "LLM", "workflow automation", "teaching studio"],
-  icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
-  },
-};
-
-export const viewport: Viewport = {
-  themeColor: "#09090b",
+    "Describe an app in chat and watch the build agent scaffold it live — file tree, status and preview in one workspace.",
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
-      >
+    <html lang="en" className="dark">
+      <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         {children}
-        {/* Toasts sit top-LEFT below the header: never over the composer/Send
-            button (bottom-right) and never over the stage's Stop control
-            (top-right). Transient + click-dismissible, so they cannot block
-            navigation either. */}
-        <Toaster position="top-left" offset={64} richColors closeButton />
+        <Toaster position="top-center" />
       </body>
     </html>
   );
