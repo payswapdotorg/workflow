@@ -4,6 +4,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { MANAGED_BROWSER_SESSION } from "@/lib/tools";
 import { withRouteTimeout } from "@/lib/api-guard";
+import { e2bBrowserEnabled, getE2bBrowser } from "@/lib/e2b-browser";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,7 +36,11 @@ const MAX_SNAPSHOT_CHARS = 20_000;
 /** Screenshots land here (inside the gitignored workspace, never committed). */
 const FRAME_DIR = path.join(process.cwd(), "workspace", ".managed");
 
-function cli(args: string[], timeoutMs = 45_000): Promise<{ ok: boolean; output: string }> {
+/** M8: when E2B is configured the managed browser lives in the sandbox — the
+ *  operator console drives the SAME agent-browser session, just remotely. */
+const USE_E2B = e2bBrowserEnabled();
+
+function localCli(args: string[], timeoutMs = 45_000): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     execFile(
       "agent-browser",
@@ -51,6 +56,12 @@ function cli(args: string[], timeoutMs = 45_000): Promise<{ ok: boolean; output:
       }
     );
   });
+}
+
+async function cli(args: string[], timeoutMs = 45_000): Promise<{ ok: boolean; output: string }> {
+  if (!USE_E2B) return localCli(args, timeoutMs);
+  const r = await getE2bBrowser().runArgs(["--session", MANAGED_SESSION, ...args], timeoutMs);
+  return { ok: r.ok, output: r.output.slice(0, MAX_SNAPSHOT_CHARS) };
 }
 
 /** Only real http(s) URLs, no shell-hostile characters (execFile needs no quoting, but stay strict). */
@@ -72,8 +83,18 @@ async function liveState(): Promise<{ active: boolean; url: string | null; title
   };
 }
 
-/** Real frame of the managed page: PNG screenshot -> base64 data URL. */
+/** Real frame of the managed page: PNG screenshot -> base64 data URL.
+ *  E2B mode: the PNG lands INSIDE the sandbox and is fetched back as bytes;
+ *  local mode: the PNG lands on the host disk. */
 async function captureFrame(): Promise<string | null> {
+  if (USE_E2B) {
+    const remote = `/tmp/managed-${Date.now()}.png`;
+    const shot = await cli(["screenshot", remote], 30_000);
+    if (!shot.ok) return null;
+    const b64 = await getE2bBrowser().readFileBase64(remote);
+    if (!b64) return null;
+    return `data:image/png;base64,${b64}`;
+  }
   await fs.mkdir(FRAME_DIR, { recursive: true });
   const file = path.join(FRAME_DIR, `managed-${Date.now()}.png`);
   try {

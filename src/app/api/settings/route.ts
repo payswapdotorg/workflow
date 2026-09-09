@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { withRouteTimeout } from "@/lib/api-guard";
+import { getProviderSettings } from "@/lib/llm-server";
 
 export const runtime = "nodejs";
 
-function serialize(s: { endpoint: string; apiKey: string; model: string }) {
+/** Serializes the EFFECTIVE provider (DB -> env -> fallback, see
+ *  getProviderSettings): the UI must show what is actually serving calls,
+ *  including the env-provided self-hosted endpoint (M8). The API key is
+ *  masked — it never leaves the server in full. */
+function serialize(s: { endpoint: string; apiKey: string; model: string; custom: boolean; source: "db" | "env" | "fallback" }) {
   const hasKey = !!s.apiKey;
   return {
     endpoint: s.endpoint,
@@ -13,20 +18,15 @@ function serialize(s: { endpoint: string; apiKey: string; model: string }) {
     keyMasked: hasKey
       ? `${s.apiKey.slice(0, Math.min(4, s.apiKey.length))}••••${s.apiKey.length > 8 ? s.apiKey.slice(-4) : ""}`
       : null,
-    usingFallback: !(s.endpoint && s.apiKey),
+    usingFallback: !s.custom,
+    source: s.source,
   };
 }
 
 export const GET = withRouteTimeout(
   async () => {
-    const s = await db.settings.findUnique({ where: { id: "singleton" } });
-    return NextResponse.json(
-      serialize({
-        endpoint: s?.endpoint ?? "",
-        apiKey: s?.apiKey ?? "",
-        model: s?.model ?? "",
-      })
-    );
+    const resolved = await getProviderSettings();
+    return NextResponse.json(serialize(resolved));
   },
   { timeoutMs: 30_000, label: "settings.get" }
 );
@@ -62,13 +62,16 @@ export const PUT = withRouteTimeout(
       data.apiKey = body.apiKey.trim();
     }
 
-    const s = await db.settings.upsert({
+    await db.settings.upsert({
       where: { id: "singleton" },
       update: data,
       create: { id: "singleton", ...data },
     });
 
-    return NextResponse.json(serialize({ endpoint: s.endpoint, apiKey: s.apiKey, model: s.model }));
+    /* Response reflects the effective ladder: if the DB row is now
+       half-configured the env/self-hosted layer may take over — show that. */
+    const resolved = await getProviderSettings();
+    return NextResponse.json(serialize(resolved));
   },
   { timeoutMs: 30_000, label: "settings.put" }
 );

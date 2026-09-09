@@ -1,25 +1,23 @@
 import ZAI from "z-ai-web-dev-sdk";
 import { db } from "@/lib/db";
+import { resolveProvider, type ProviderInfo, type ResolvedProvider } from "./provider-ladder";
+
+export { resolveProvider } from "./provider-ladder";
+export type { ProviderInfo, ProviderRow, ProviderSource, ResolvedProvider } from "./provider-ladder";
 
 export interface ServerLLMMessage {
   role: "user" | "assistant" | "system";
   content: unknown; // string OR OpenAI content-part array
 }
 
-export interface ProviderInfo {
-  custom: boolean;
-  endpoint: string;
-  apiKey: string;
-  model: string;
-}
-
-/** Reads provider settings from the DB (API key stays server-side). */
-export async function getProviderSettings(): Promise<ProviderInfo> {
+/** Reads provider settings — the self-hosting ladder (M8), DB -> env ->
+ *  built-in fallback. See resolveProvider (provider-ladder.ts) for the rules. */
+export async function getProviderSettings(): Promise<ResolvedProvider> {
   const s = await db.settings.findUnique({ where: { id: "singleton" } });
-  const endpoint = (s?.endpoint ?? "").trim();
-  const apiKey = (s?.apiKey ?? "").trim();
-  const model = (s?.model ?? "").trim();
-  return { custom: !!(endpoint && apiKey), endpoint, apiKey, model };
+  return resolveProvider(
+    { endpoint: s?.endpoint, apiKey: s?.apiKey, model: s?.model },
+    process.env
+  );
 }
 
 /** Normalizes a base URL into a chat-completions endpoint. */
