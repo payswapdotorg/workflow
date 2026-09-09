@@ -2,7 +2,8 @@ import { exec } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
 import { TOOL_DEFINITIONS, isKnownTool } from "./tool-catalog";
-import { createBrowserTool, realCliRunner } from "./browser-tool";
+import { createBrowserTool, realCliRunner, type CliRunner } from "./browser-tool";
+import { e2bBrowserEnabled, getE2bBrowser, E2B_WORKSPACE_ROOT } from "./e2b-browser";
 
 /**
  * TeachCast agent toolset — server-side executor.
@@ -129,8 +130,21 @@ export const MANAGED_BROWSER_SESSION = "teachcast-managed";
 
 /** The M5 engine (src/lib/browser-tool.ts): one action union mapped onto the
  *  real agent-browser CLI, stale-ref law, bounded recovery, structured
- *  {code,message,remedy} errors, CLI exit codes propagated. */
-const browserTool = createBrowserTool({ runCli: realCliRunner, workspaceRoot: WORKSPACE_ROOT });
+ *  {code,message,remedy} errors, CLI exit codes propagated.
+ *
+ *  Backend selection (M8): local host by default (zero change for existing
+ *  deployments); when E2B is configured (E2B_API_KEY / BROWSER_BACKEND=e2b)
+ *  the very same CLI contract executes inside an E2B sandbox, which is what
+ *  makes browser_control work on serverless hosts (Vercel). The runner is a
+ *  lazy delegate so the e2b SDK only loads when browser work is requested. */
+const useE2bBrowser = e2bBrowserEnabled();
+const e2bRunner: CliRunner = (call) => getE2bBrowser().runCli(call);
+const browserTool = createBrowserTool({
+  runCli: useE2bBrowser ? e2bRunner : realCliRunner,
+  /** In E2B mode screenshot paths resolve inside the sandbox; locally they
+   *  stay in the host workspace. */
+  workspaceRoot: useE2bBrowser ? E2B_WORKSPACE_ROOT : WORKSPACE_ROOT,
+});
 
 /** Executes an agent tool by name. Throws on invalid usage; returns real output.
  *  opts.browserSession scopes browser_control to a concrete agent-browser

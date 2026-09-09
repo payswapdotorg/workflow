@@ -9,10 +9,20 @@ Share your real screen, teach a real LLM a workflow through a live narrated sess
 - **Replay** — launching a workflow replays it step by step against your live screen: progress bar, per-step cards with the active step highlighted, Pause/Resume/Stop controls, and per-step LLM narration analyzing live frames. The narrator can **act on the computer** to perform steps (create files, run commands, drive a browser). You can chat with the LLM mid-replay.
 - **Settings** — connect any OpenAI-compatible provider (endpoint + model + API key). The key is stored server-side (SQLite via Prisma) and never exposed to the browser. Without a custom provider, TeachCast uses a real built-in LLM (text-only, no mocks).
 
+## Self-hosting: GLM on Modal, browser on E2B (M8)
+
+TeachCast runs serverless without giving up either half of its brain:
+
+- **LLM — your own GLM endpoint.** `modal/glm_modal.py` deploys the open-weights GLM-4.7-Flash (31 GB MoE, MIT) on [Modal](https://modal.com) as an OpenAI-compatible endpoint with scale-to-zero. Set `PROVIDER_ENDPOINT` / `PROVIDER_API_KEY` / `PROVIDER_MODEL` (env beats the built-in fallback; the Settings UI beats env) and the app stops depending on the shared Z.ai API — no shared balance, no shared rate limit. Full runbook in [`modal/README.md`](modal/README.md).
+- **Browser — agent-browser inside an E2B sandbox.** `browser_control` and the managed console speak the exact same agent-browser CLI contract; with `E2B_API_KEY` set, those commands execute INSIDE an E2B sandbox instead of on the host (`src/lib/e2b-browser.ts`), so the computer-use half works on Vercel. Refs, snapshots, exit codes and the structured failure codes are unchanged. Build the custom sandbox template once (`e2b-template/`) for ~instant sandbox starts.
+
+Both are opt-in env config — an existing deployment without the new env vars behaves exactly as before.
+
 ## Requirements
 
 - Node.js 20+ (or Bun 1.2+)
-- `agent-browser` CLI on PATH — required for the browser tools and the managed-session console (the computer-use half of TeachCast); everything else works without it
+- `agent-browser` CLI on PATH — required for the browser tools and the managed-session console when running browsers on the HOST; not needed when the E2B backend is configured (`E2B_API_KEY`, see above — the CLI runs inside the sandbox)
+- An E2B API key — required only for the serverless browser backend (`E2B_API_KEY`, [e2b.dev](https://e2b.dev)); everything else works without it
 - Desktop Chrome, Edge, or Firefox for screen sharing (the app must run in a top-level tab — use the "Open in new tab" button when embedded)
 
 ## Getting started (fresh clone)
@@ -64,6 +74,9 @@ TeachCast turns a live demonstration into a re-runnable app:
 | Client state | `src/lib/store.ts` | zustand; the store instance survives HMR via a dev-only globalThis cache |
 | Screen capture | `src/lib/screen.ts`, `src/components/teachcast/screen-stage.tsx` | `getDisplayMedia`, canvas frame snapshots, permission watchdog, graceful track-ended handling |
 | Streaming chat | `src/app/api/chat/route.ts` | OpenAI-compatible SSE passthrough for custom providers; real built-in LLM fallback |
+| Provider ladder | `src/lib/provider-ladder.ts`, `src/lib/llm-server.ts` | DB (Settings UI) -> env (`PROVIDER_*`, the self-hosted Modal channel) -> built-in fallback; half-configured layers are skipped, never mixed |
+| Self-hosted GLM | `modal/glm_modal.py` | vLLM on Modal serving GLM-4.7-Flash, OpenAI-compatible, Bearer-key auth, scale-to-zero (deploy: `modal deploy modal/glm_modal.py`) |
+| Browser backend | `src/lib/e2b-browser.ts`, `e2b-template/` | local agent-browser by default; with `E2B_API_KEY` the same CLI contract runs in an E2B sandbox (find-or-create, idempotent bootstrap, keep-alive, exit-code mapping) |
 | Workflow compile | `src/app/api/compile/route.ts` | the LLM compiles recorded events into named, replayable steps |
 | Replay engine | `src/lib/replay-engine.ts` | module-level runner: pause/resume/stop, per-step narration, run marking |
 | Agent toolset | `src/lib/tool-catalog.ts`, `src/lib/tools.ts`, `src/app/api/tools/exec/route.ts` | mirrors the chat.z.ai agent toolset — `read_file`, `write_file`, `run_shell`, `run_code`, `browser_control` — executed for real on the host, rooted at `workspace/` |
@@ -73,7 +86,7 @@ TeachCast turns a live demonstration into a re-runnable app:
 
 ## Agent toolset
 
-TeachCast's LLM mirrors the chat.z.ai agent toolset and can act on the computer, not just narrate:
+TeachCast's LLM mirrors the chat.z.ai agent toolset and can act on the computer, not just narrate. The `browser_control` tool runs the same agent-browser CLI contract either on the host (default) or inside an E2B sandbox (serverless) — refs, snapshots and failure codes are identical either way:
 
 | Tool | What it does |
 |------|--------------|
